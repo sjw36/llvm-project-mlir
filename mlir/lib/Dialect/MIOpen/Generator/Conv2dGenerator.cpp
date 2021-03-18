@@ -18,40 +18,39 @@ LogicalResult Conv2dGenerator::parseConvDims(
     int64_t filterWidth, SmallVector<int64_t, 4> &filterDimension,
     SmallVector<int64_t, 4> &inputDimension,
     SmallVector<int64_t, 4> &outputDimension) {
+  std::transform(filterLayout.begin(), filterLayout.end(), filterLayout.begin(), ::tolower);
+  std::transform(inputLayout.begin(), inputLayout.end(), inputLayout.begin(), ::tolower);
+  std::transform(outputLayout.begin(), outputLayout.end(), outputLayout.begin(), ::tolower);
+
   // Determine dimensions.
   for (size_t i = 0; i < 4; ++i) {
-    auto &filterDim = filterLayout[i];
-    auto &inputDim = inputLayout[i];
-    auto &outputDim = outputLayout[i];
+    auto filterDim = filterLayout[i];
+    auto inputDim = inputLayout[i];
+    auto outputDim = outputLayout[i];
 
-    if (filterDim == 'k') {
-      filterDimension.push_back(outputChannel);
-    } else if (filterDim == 'c') {
-      filterDimension.push_back(inputChannel);
-    } else if (filterDim == 'y') {
-      filterDimension.push_back(filterHeight);
-    } else if (filterDim == 'x') {
-      filterDimension.push_back(filterWidth);
+    switch (filterDim) {
+    case 'k':
+    case 'n': filterDimension.push_back(outputChannel); filterLayout[i] = 'k';     break;
+    case 'c': filterDimension.push_back(inputChannel);                             break;
+    case 'y':
+    case 'h': filterDimension.push_back(filterHeight); filterLayout[i] = 'y';      break;
+    case 'x':
+    case 'w': filterDimension.push_back(filterWidth); filterLayout[i] = 'x';       break;
     }
 
-    if (inputDim == 'n') {
-      inputDimension.push_back(batchSize);
-    } else if (inputDim == 'c') {
-      inputDimension.push_back(inputChannel);
-    } else if (inputDim == 'h') {
-      inputDimension.push_back(inputHeight);
-    } else if (inputDim == 'w') {
-      inputDimension.push_back(inputWidth);
+    switch (inputDim) {
+    case 'n': inputDimension.push_back(batchSize);                                 break;
+    case 'c': inputDimension.push_back(inputChannel);                              break;
+    case 'h': inputDimension.push_back(inputHeight);                               break;
+    case 'w': inputDimension.push_back(inputWidth);                                break;
     }
 
-    if (outputDim == 'n') {
-      outputDimension.push_back(batchSize);
-    } else if (outputDim == 'k') {
-      outputDimension.push_back(outputChannel);
-    } else if (outputDim == 'h') {
-      outputDimension.push_back(outputHeight);
-    } else if (outputDim == 'w') {
-      outputDimension.push_back(outputWidth);
+    switch (outputDim) {
+    case 'n': outputDimension.push_back(batchSize);                                break;
+    case 'c':
+    case 'k': outputDimension.push_back(outputChannel); outputLayout[i] = 'k';     break;
+    case 'h': outputDimension.push_back(outputHeight);                             break;
+    case 'w': outputDimension.push_back(outputWidth);                              break;
     }
   }
 

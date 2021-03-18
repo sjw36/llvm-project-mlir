@@ -83,28 +83,27 @@ extern "C" MiirHandle miirCreateHandle(const char *arguments) {
 
   auto getType = [](mlir::MLIRContext *context, const std::string &type_s) {
     mlir::Type type;
-    if (type_s == "fp32") {
+    if (type_s == "f32") {
       type = mlir::FloatType::getF32(context);
-    } else if (type_s == "fp16") {
+    } else if (type_s == "f16") {
       type = mlir::FloatType::getF16(context);
+    } else if (type_s == "bf16") {
+      type = mlir::FloatType::getBF16(context);
     }
     return type;
   };
 
+  // check output type
+  mlir::Type type = getType(&(handle->context), argMap["out_type"]);
+
   // Proceed only if we have a valid argMap. Otherwise leave the handle to be
   // empty
-  if (isValid()) {
+  if (isValid() && type) {
 
     handle = new MiirHandle_s;
     OpBuilder builder(&(handle->context));
 
     handle->arch = argMap["arch"];
-
-    mlir::Type type = getType(&(handle->context), argMap["out_type"]);
-    if (!type) {
-      delete handle;
-      return nullptr;
-    }
 
     auto strToLong = [&argMap](std::string argKey) {
       return std::stoul(argMap[argKey]);
