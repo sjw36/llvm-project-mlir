@@ -161,3 +161,4 @@ void mlir::tosa::populateTosaToMIOpenConversionPatterns(
   static BufferizeTypeConverter bufferizer;
   patterns->insert<ConvConverter>(bufferizer, context);
 }
+
