@@ -83,6 +83,52 @@ public:
 
     SmallVector<Value, 4> args({filterExpanded, inputExpanded, outputExpanded});
 
+#if 0
+    std::vector<NamedAttribute> attributes{
+      rewriter.getNamedAttr("arch", rewriter.getStringAttr(arch)),
+          rewriter.getNamedAttr("num_cu", rewriter.getI32IntegerAttr(num_cu)),
+
+          rewriter.getNamedAttr(
+              "filter_layout",
+              rewriter.getArrayAttr(ArrayRef<mlir::Attribute>(
+                                       filterLayoutSpec.begin(), filterLayoutSpec.end()))),
+          rewriter.getNamedAttr(
+              "input_layout", rewriter.getArrayAttr(ArrayRef<mlir::Attribute>(
+                                                       inputLayoutSpec.begin(), inputLayoutSpec.end()))),
+          rewriter.getNamedAttr(
+              "output_layout",
+              rewriter.getArrayAttr(ArrayRef<mlir::Attribute>(
+                                       outputLayoutSpec.begin(), outputLayoutSpec.end()))),
+
+          rewriter.getNamedAttr("dilations",
+                               rewriter.getArrayAttr({
+                                   rewriter.getI32IntegerAttr(dilationHeight),
+                                       rewriter.getI32IntegerAttr(dilationWidth),
+                                       })),
+          rewriter.getNamedAttr("strides",
+                               rewriter.getArrayAttr({
+                                   rewriter.getI32IntegerAttr(strideHeight),
+                                       rewriter.getI32IntegerAttr(strideWidth),
+                                       })),
+          rewriter.getNamedAttr("padding",
+                               rewriter.getArrayAttr({
+                                   rewriter.getI32IntegerAttr(paddingHeight),
+                                       rewriter.getI32IntegerAttr(paddingWidth),
+                                       })),
+          };
+
+      // xdlops v2.
+  // if (xdlops)
+  //   attributes.push_back(
+  //       rewriter.getNamedAttr("xdlopsV2", rewriter.getBoolAttr(true)));
+    
+#endif
+
+      TypeRange resTypes;
+      auto cop = rewriter.create<mlir::miopen::Conv2DOp>(loc, resTypes, args);
+
+
+#if 1
     // Construct a new Conv2DOp.
     TypeRange resultTypes;
     auto cop = rewriter.create<mlir::miopen::Conv2DOp>(
