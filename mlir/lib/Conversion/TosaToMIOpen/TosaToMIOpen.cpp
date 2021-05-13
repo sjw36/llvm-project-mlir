@@ -83,6 +83,7 @@ public:
 
     SmallVector<Value, 4> args({filterExpanded, inputExpanded, outputExpanded});
 
+    // Construct a new Conv2DOp.
     TypeRange resTypes;
     auto cop = rewriter.create<mlir::miopen::Conv2DOp>(loc, resTypes, args);
 
@@ -164,4 +165,3 @@ void mlir::tosa::populateTosaToMIOpenConversionPatterns(
   static BufferizeTypeConverter bufferizer;
   patterns->insert<ConvConverter>(bufferizer, context);
 }
-
