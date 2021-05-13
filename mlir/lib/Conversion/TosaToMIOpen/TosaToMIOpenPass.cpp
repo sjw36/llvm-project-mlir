@@ -39,6 +39,7 @@ public:
     ConversionTarget target(getContext());
     target.addLegalDialect<miopen::MIOpenDialect, linalg::LinalgDialect,
                            StandardOpsDialect>();
+    // target.addIllegalDialect<tosa::TosaDialect>();
     target.addIllegalOp<tosa::Conv2DOp>();
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
