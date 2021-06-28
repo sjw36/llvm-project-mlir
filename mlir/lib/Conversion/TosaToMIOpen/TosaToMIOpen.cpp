@@ -68,6 +68,11 @@ public:
     // auto bias_t = operands[2];
     auto results = op->getResults();
 
+    // attach kernel attr to parent function
+    auto par = op->getParentOfType<FuncOp>();
+
+    par->setAttr("kernel", rewriter.getUnitAttr());
+
     assert(results.size() == 1);
 
     // expand tensors from rank 4 (NHWC) to rank 5 (NHWCG)
@@ -78,6 +83,14 @@ public:
     auto outputType = getTypeConverter<BufferizeTypeConverter>()
                           ->convertType(results[0].getType())
                           .cast<MemRefType>();
+
+    // don't alloc if it is returned (add another pass to promote the buffer)
+    // auto opresult = op->getOpResult(0);
+    // if (opresult && opresult.getOwner()) {
+    //   // output is returned
+    //   assert(0);
+    // }
+
     Value output_mr = rewriter.create<AllocOp>(loc, outputType);
     auto outputExpanded = expandTensor(op, output_mr, rewriter);
 

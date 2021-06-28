@@ -25,6 +25,10 @@ namespace scf {
 class SCFDialect;
 } // namespace scf
 
+namespace linalg {
+class LinalgDialect;
+} // namespace scf
+
 namespace gpu {
 class GPUDialect;
 } // namespace gpu

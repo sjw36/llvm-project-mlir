@@ -28,6 +28,10 @@ std::unique_ptr<Pass> createLowerMIOpenOpsStep1Pass();
 /// operations.
 std::unique_ptr<Pass> createLowerMIOpenOpsStep2Pass();
 
+/// 
+/// 
+std::unique_ptr<Pass> createMIOpenLinalgAlignPass();
+
 /// Create a pass to convert MIOpen blockwise operations to threadwise
 /// operations.
 std::unique_ptr<Pass> createLowerMIOpenOpsStep3Pass();
