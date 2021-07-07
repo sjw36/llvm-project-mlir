@@ -97,10 +97,6 @@ public:
     SmallVector<Value, 4> args({filterExpanded, inputExpanded, outputExpanded});
 
     // Construct a new Conv2DOp.
-    TypeRange resTypes;
-    auto cop = rewriter.create<mlir::miopen::Conv2DOp>(loc, resTypes, args);
-
-    // Construct a new Conv2DOp.
     TypeRange resultTypes;
     auto cop = rewriter.create<mlir::miopen::Conv2DOp>(
         loc, resultTypes, ValueRange{args[0], args[1], args[2]});
