@@ -61,11 +61,9 @@ if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
     PATTERN "config.h" EXCLUDE
     )
 
-  if (NOT LLVM_ENABLE_IDE)
-    add_llvm_install_targets(install-mlir-miopen-headers
-                             DEPENDS mlir-miopen-headers
-                             COMPONENT mlir-miopen-headers)
-  endif()
+  add_llvm_install_targets(install-mlir-miopen-headers
+                           DEPENDS mlir-miopen-headers
+                           COMPONENT mlir-miopen-headers)
 endif()
 
 
