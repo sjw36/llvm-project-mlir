@@ -27,6 +27,7 @@
 #include "mlir/Dialect/MIOpen/MIOpen.h"
 #include "mlir/Dialect/MIOpen/Passes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -238,11 +239,27 @@ template <typename T> struct MILARewritePattern : public OpRewritePattern<T> {
     return laOut;
   }
 
+  static bool checkCompatibleTypes(Type inpType, Attribute &inpMap, Type outType, Attribute &outMap) {
+    if (inpType == outType && inpMap == outMap) {
+      return true;
+    } else {
+
+
+    }
+    return false;
+  }
+
   LogicalResult matchAndRewrite(T laGeneric,
                                 PatternRewriter &b) const override {
+
     LogicalResult fail = failure();
     auto loc = laGeneric.getLoc();
 
+    auto pFunc = laGeneric->template getParentOfType<FuncOp>();
+    if (!pFunc->hasAttr("kernel")) {
+      return fail;
+    }
+    
     // 0. Test compatibility
     // 0.0. Only fully parallel for now
     for (auto itr : laGeneric.iterator_types()) {
@@ -257,127 +274,144 @@ template <typename T> struct MILARewritePattern : public OpRewritePattern<T> {
       return fail;
     }
 
-    Value twinpV1;
-    Value twinpV2;
-    SmallVector<Value, 5> transforms;
+    auto idxMaps = laGeneric->template getAttrOfType<ArrayAttr>("indexing_maps");
+    auto outIdxMap = idxMaps[idxMaps.size()-1];
+
     // 1. Trace input to threadwise_copy. Collect transforms (to be applied to
-    // other inputs). test compatibility
+    // other inputs).
+    // 1.1. Find the conv2d output
+    Value twinp;
+    bool v2 = true;
+    SmallVector<Value, 5> transforms;
+    int32_t convoutidx = 0;
+    int32_t idx = 0;
     for (auto inp : laGeneric.inputs()) {
-      // 1.1. Test aligned input with output type
-      if (inp.getType() != out.getType()) {
-        return fail;
+      // 1.1. first trace to back to regs, then forward to twcopy
+      auto twinp_t = traceToThreadwiseCopy<miopen::ThreadwiseCopyV2Op>(inp, transforms);
+      if (!twinp_t) {
+        twinp_t = traceToThreadwiseCopy<miopen::ThreadwiseCopyOp>(inp, transforms);
+        v2 = false;
       }
-      // first trace to back to regs, then forward to twcopy
-      if (auto twinp_t = traceToThreadwiseCopy<miopen::ThreadwiseCopyOp>(
-              inp, transforms)) {
+      if (twinp_t) {
         // 1.2. Only one input should trace to twcopy
-        assert(!twinpV1);
-        twinpV1 = twinp_t;
-      } else if (auto twinp_t =
-                     traceToThreadwiseCopy<miopen::ThreadwiseCopyV2Op>(
-                         inp, transforms)) {
-        assert(!twinpV2);
-        twinpV2 = twinp_t;
+        assert(!twinp);
+        twinp = twinp_t;
+        convoutidx = idx;
       }
+      idx++;
     }
-
+    
     // 2. Apply if input found
-    if (twinpV1) {
-      auto lastTransform = transforms.back();
-      auto twcopy = dyn_cast<miopen::ThreadwiseCopyOp>(
-          lastTransform.use_begin()->getOwner());
-
-      Value regTWCopy = backtrace<miopen::ThreadwiseCopyOp>(lastTransform, 0);
-      if (auto regTransform = regTWCopy.getDefiningOp<miopen::TransformOp>()) {
-        // 2.0. Reset insertion point to just before threadwise_copy
-        b.setInsertionPoint(twcopy);
-
-        // 2.1. Tile and insert linalg.generic on registers
-        auto regTFInp = regTransform.input();
-
-        auto laOutRegs =
-            reconfigureLAGeneric(laGeneric, b, transforms, regTFInp, twcopy);
-
-        // 2.4. Move linalg.generic
-        laGeneric->moveBefore(twcopy);
-
-        // 2.5. Reset input regs on threadwise_copy
-        regTransform->setOperand(0, laOutRegs);
-        regTransform->moveBefore(twcopy);
-        twcopy->setOperand(0, regTransform);
-
-        // 2.6. Reset output on threadwise_copy
-        auto mrReshape =
-            transforms.front().getDefiningOp<memref::ExpandShapeOp>();
-        mrReshape->setOperand(0, out);
-
-        return success();
-      }
-    } else if (twinpV2) {
-      auto lastTransform = transforms.back();
-      SmallVector<Operation *, 2> twcopys;
-      for (auto &use : lastTransform.getUses()) {
-        if (auto twcopy =
-                dyn_cast<miopen::ThreadwiseCopyV2Op>(use.getOwner())) {
-          twcopys.push_back(twcopy);
-        } else {
+    if (twinp) {
+      // 2.0. Check compatibility of other inputs
+      int32_t idx = 0;
+      for (auto inp : laGeneric.inputs()) {
+        // 2.1. Test aligned input with output type
+        auto idxMap = idxMaps[idx];
+        if (idx != convoutidx &&
+            !checkCompatibleTypes(inp.getType(), idxMap, out.getType(), outIdxMap)) {
           return fail;
         }
+        idx++;
       }
-      if (twcopys.size() != 2)
-        return fail;
 
-      auto twcopy = dyn_cast<miopen::ThreadwiseCopyV2Op>(twcopys.back());
+      if (!v2) {
+        auto lastTransform = transforms.back();
+        auto twcopy = dyn_cast<miopen::ThreadwiseCopyOp>(
+            lastTransform.use_begin()->getOwner());
 
-      Value regBWGemmV2 = twcopy.getOperand(0);
-      if (auto miBWGemmV2 =
-              regBWGemmV2.getDefiningOp<miopen::BlockwiseGemmV2Op>()) {
-        // 2.0. Reset insertion point to just before threadwise_copy
-        b.setInsertionPoint(twcopy);
+        Value regTWCopy = backtrace<miopen::ThreadwiseCopyOp>(lastTransform, 0);
+        if (auto regTransform = regTWCopy.getDefiningOp<miopen::TransformOp>()) {
+          // 2.0. Reset insertion point to just before threadwise_copy
+          b.setInsertionPoint(twcopy);
 
-        // 2.1. Capture gemm return shape
-        auto regVecType = regBWGemmV2.getType().template cast<VectorType>();
-        assert(regVecType.hasStaticShape());
-        assert(regVecType.getRank() == 1);
+          // 2.1. Tile and insert linalg.generic on registers
+          auto regTFInp = regTransform.input();
 
-        SmallVector<int64_t, 2> shape{2, regVecType.getNumElements()};
-        auto elemType = regVecType.getElementType();
+          auto laOutRegs =
+              reconfigureLAGeneric(laGeneric, b, transforms, regTFInp, twcopy);
 
-        // 2.2. Make vgpr alloc to fit gemm return
-        // --- alternatively make 2 linalg.generics (1 for each vector)
-        auto regType = MemRefType::get(shape, elemType, {}, 5);
-        auto laInRegs = b.create<miopen::GpuAllocOp>(loc, regType);
+          // 2.4. Move linalg.generic
+          laGeneric->moveBefore(twcopy);
 
-        // 2.3. Copy gemm result vectors into vgpr
-        // > vector.store %58#0, %59[%c0, %c0] : memref<2x4xf32>, vector<4xf32>
-        // > vector.store %58#1, %59[%c1, %c0] : memref<2x4xf32>, vector<4xf32>
-        Value c0 = b.create<arith::ConstantIndexOp>(loc, 0);
-        Value c1 = b.create<arith::ConstantIndexOp>(loc, 1);
-        const SmallVector<Value, 2> coords0{c0, c0};
-        const SmallVector<Value, 2> coords1{c1, c0};
-        b.create<vector::StoreOp>(loc, twcopys.back()->getOperand(0), laInRegs,
-                                  coords0);
-        b.create<vector::StoreOp>(loc, twcopys.front()->getOperand(0), laInRegs,
-                                  coords1);
+          // 2.5. Reset input regs on threadwise_copy
+          regTransform->setOperand(0, laOutRegs);
+          regTransform->moveBefore(twcopy);
+          twcopy->setOperand(0, regTransform);
 
-        // 2.4. Tile linalg.generic with vgpr as input, return output vgprs
-        auto laOutRegs =
-            reconfigureLAGeneric(laGeneric, b, transforms, laInRegs, twcopy);
-        // 2.4.0. and insert before twcopys
-        laGeneric->moveBefore(twcopy);
+          // 2.6. Reset output on threadwise_copy
+          auto mrReshape =
+              transforms.front().getDefiningOp<memref::ExpandShapeOp>();
+          mrReshape->setOperand(0, out);
 
-        // 2.5. Replace twcopy inputs with vector from la result vgpr
-        auto vload0 =
-            b.create<vector::LoadOp>(loc, regVecType, laOutRegs, coords0);
-        auto vload1 =
-            b.create<vector::LoadOp>(loc, regVecType, laOutRegs, coords1);
-        twcopys.back()->setOperand(0, vload0);
-        twcopys.front()->setOperand(0, vload1);
+          return success();
+        }
+      } else {
+        auto lastTransform = transforms.back();
+        SmallVector<Operation *, 2> twcopys;
+        for (auto &use : lastTransform.getUses()) {
+          if (auto twcopy =
+              dyn_cast<miopen::ThreadwiseCopyV2Op>(use.getOwner())) {
+            twcopys.push_back(twcopy);
+          } else {
+            return fail;
+          }
+        }
+        if (twcopys.size() != 2)
+          return fail;
 
-        // 2.6. Reset twcopy output to point to old laGeneric output
-        auto mrReshape =
-            transforms.front().getDefiningOp<memref::ExpandShapeOp>();
-        mrReshape->setOperand(0, out);
+        auto twcopy = dyn_cast<miopen::ThreadwiseCopyV2Op>(twcopys.back());
+
+        Value regBWGemmV2 = twcopy.getOperand(0);
+        if (auto miBWGemmV2 =
+            regBWGemmV2.getDefiningOp<miopen::BlockwiseGemmV2Op>()) {
+          // 2.0. Reset insertion point to just before threadwise_copy
+          b.setInsertionPoint(twcopy);
+
+          // 2.1. Capture gemm return shape
+          auto regVecType = regBWGemmV2.getType().template cast<VectorType>();
+          assert(regVecType.hasStaticShape());
+          assert(regVecType.getRank() == 1);
+
+          SmallVector<int64_t, 2> shape{2, regVecType.getNumElements()};
+          auto elemType = regVecType.getElementType();
+
+          // 2.2. Make vgpr alloc to fit gemm return
+          // --- alternatively make 2 linalg.generics (1 for each vector)
+          auto regType = MemRefType::get(shape, elemType, {}, 5);
+          auto laInRegs = b.create<miopen::GpuAllocOp>(loc, regType);
+
+          // 2.3. Copy gemm result vectors into vgpr
+          // > vector.store %58#0, %59[%c0, %c0] : memref<2x4xf32>, vector<4xf32>
+          // > vector.store %58#1, %59[%c1, %c0] : memref<2x4xf32>, vector<4xf32>
+          Value c0 = b.create<arith::ConstantIndexOp>(loc, 0);
+          Value c1 = b.create<arith::ConstantIndexOp>(loc, 1);
+          const SmallVector<Value, 2> coords0{c0, c0};
+          const SmallVector<Value, 2> coords1{c1, c0};
+          b.create<vector::StoreOp>(loc, twcopys.back()->getOperand(0), laInRegs,
+                                    coords0);
+          b.create<vector::StoreOp>(loc, twcopys.front()->getOperand(0), laInRegs,
+                                    coords1);
+
+          // 2.4. Tile linalg.generic with vgpr as input, return output vgprs
+          auto laOutRegs =
+              reconfigureLAGeneric(laGeneric, b, transforms, laInRegs, twcopy);
+          // 2.4.0. and insert before twcopys
+          laGeneric->moveBefore(twcopy);
+
+          // 2.5. Replace twcopy inputs with vector from la result vgpr
+          auto vload0 =
+              b.create<vector::LoadOp>(loc, regVecType, laOutRegs, coords0);
+          auto vload1 =
+              b.create<vector::LoadOp>(loc, regVecType, laOutRegs, coords1);
+          twcopys.back()->setOperand(0, vload0);
+          twcopys.front()->setOperand(0, vload1);
+
+          // 2.6. Reset twcopy output to point to old laGeneric output
+          auto mrReshape =
+              transforms.front().getDefiningOp<memref::ExpandShapeOp>();
+          mrReshape->setOperand(0, out);
+        }
       }
     }
 
