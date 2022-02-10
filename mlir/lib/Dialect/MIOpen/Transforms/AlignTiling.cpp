@@ -210,17 +210,20 @@ template <typename T> struct MILARewritePattern : public OpRewritePattern<T> {
 
     SmallVector<AffineMap, 5> laGenericAMaps;
     SmallVector<Value, 5> newInputs;
+    int32_t idx = 0;
     for (auto inp : laGeneric.inputs()) {
       Value newInput;
       if (inp == twout) {
         newInput = laIn;
       } else {
+        // if (inp.getType().getShape().dims() < twout.get
         // 2.1.1. Align tiling of other inputs
         newInput = applyTransforms(b, twcopy, inp, transforms);
       }
       newInputs.push_back(newInput);
       laGenericAMaps.push_back(AffineMap::getMultiDimIdentityMap(
           newInput.getType().template cast<MemRefType>().getRank(), ctx));
+      idx++;
     }
     laGenericAMaps.push_back(
         AffineMap::getMultiDimIdentityMap(regType.getRank(), ctx));
@@ -239,12 +242,16 @@ template <typename T> struct MILARewritePattern : public OpRewritePattern<T> {
     return laOut;
   }
 
-  static bool checkCompatibleTypes(Type inpType, Attribute &inpMap, Type outType, Attribute &outMap) {
+  static bool checkCompatibleTypes(Type inpType, const AffineMapAttr &inpMap,
+                                   Type outType, const AffineMapAttr &outMap) {
     if (inpType == outType && inpMap == outMap) {
       return true;
     } else {
-
-
+      // check inpMap has same idx input shape
+      auto inpIdxMap = inpMap.getAffineMap();
+      auto outIdxMap = outMap.getAffineMap();
+      return inpIdxMap.getNumDims() == outIdxMap.getNumDims() &&
+          inpIdxMap.isMinorIdentity();
     }
     return false;
   }
@@ -275,7 +282,11 @@ template <typename T> struct MILARewritePattern : public OpRewritePattern<T> {
     }
 
     auto idxMaps = laGeneric->template getAttrOfType<ArrayAttr>("indexing_maps");
-    auto outIdxMap = idxMaps[idxMaps.size()-1];
+    auto outIdxMap = idxMaps[idxMaps.size()-1].template cast<AffineMapAttr>();
+
+    if (!outIdxMap.isIdentity()) {
+      return fail;
+    }
 
     // 1. Trace input to threadwise_copy. Collect transforms (to be applied to
     // other inputs).
@@ -283,7 +294,6 @@ template <typename T> struct MILARewritePattern : public OpRewritePattern<T> {
     Value twinp;
     bool v2 = true;
     SmallVector<Value, 5> transforms;
-    int32_t convoutidx = 0;
     int32_t idx = 0;
     for (auto inp : laGeneric.inputs()) {
       // 1.1. first trace to back to regs, then forward to twcopy
@@ -296,26 +306,20 @@ template <typename T> struct MILARewritePattern : public OpRewritePattern<T> {
         // 1.2. Only one input should trace to twcopy
         assert(!twinp);
         twinp = twinp_t;
-        convoutidx = idx;
+      } else {
+        // 2.1. Test aligned input with output type
+        auto inpIdxMap = idxMaps[idx].template cast<AffineMapAttr>();
+        if (!checkCompatibleTypes(inp.getType(), inpIdxMap, out.getType(), outIdxMap)) {
+          return fail;
+        }
       }
       idx++;
     }
     
     // 2. Apply if input found
     if (twinp) {
-      // 2.0. Check compatibility of other inputs
-      int32_t idx = 0;
-      for (auto inp : laGeneric.inputs()) {
-        // 2.1. Test aligned input with output type
-        auto idxMap = idxMaps[idx];
-        if (idx != convoutidx &&
-            !checkCompatibleTypes(inp.getType(), idxMap, out.getType(), outIdxMap)) {
-          return fail;
-        }
-        idx++;
-      }
-
       if (!v2) {
+        // V1 - non-xdlops
         auto lastTransform = transforms.back();
         auto twcopy = dyn_cast<miopen::ThreadwiseCopyOp>(
             lastTransform.use_begin()->getOwner());
