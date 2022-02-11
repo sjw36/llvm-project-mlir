@@ -138,6 +138,12 @@ template <typename T> struct MILARewritePattern : public OpRewritePattern<T> {
                         SmallVector<Value, 5> &transforms) const {
     Value ret = inp;
     BlockAndValueMapping cloningMap;
+
+    // 0. handle broadcast
+    if (auto csop = inp.getDefiningOp<memref::CollapseShapeOp>()) {
+      inp = csop.getOperand();
+    }
+    
     // 1. clone the same transforms applied to the output memory and
     //    apply to all other inputs to the linalg.generic
     for (auto transform : transforms) {
@@ -263,9 +269,9 @@ template <typename T> struct MILARewritePattern : public OpRewritePattern<T> {
     auto loc = laGeneric.getLoc();
 
     auto pFunc = laGeneric->template getParentOfType<FuncOp>();
-    if (!pFunc->hasAttr("kernel")) {
-      return fail;
-    }
+    // if (!pFunc->hasAttr("kernel")) {
+    //   return fail;
+    // }
     
     // 0. Test compatibility
     // 0.0. Only fully parallel for now
