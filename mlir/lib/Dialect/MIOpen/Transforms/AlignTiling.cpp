@@ -134,6 +134,18 @@ template <typename T> struct MILARewritePattern : public OpRewritePattern<T> {
     return nAlloc->getResult(0);
   }
 
+  static Type broadcastExpandShape(Type baseType) {
+    // change output type based on input type, add 1 dim of size 1
+    auto oprType = baseType.template cast<ShapedType>();
+    auto shape = oprType.getShape();
+    SmallVector<int64_t, 5> expShape(shape.begin(), shape.end());
+    if (shape.size() == 1) {
+      expShape = {1,1,1,shape[0]};
+    }
+    expShape.push_back(1);
+    return MemRefType::get(expShape, oprType.getElementType());
+  }
+
   Value applyTransforms(PatternRewriter &b, Operation *miTWCopy, Value inp,
                         SmallVector<Value, 5> &transforms) const {
     Value ret = inp;
@@ -141,7 +153,7 @@ template <typename T> struct MILARewritePattern : public OpRewritePattern<T> {
 
     // 0. handle broadcast
     if (auto csop = inp.getDefiningOp<memref::CollapseShapeOp>()) {
-      inp = csop.getOperand();
+      ret = csop.getOperand();
     }
     
     // 1. clone the same transforms applied to the output memory and
@@ -156,6 +168,7 @@ template <typename T> struct MILARewritePattern : public OpRewritePattern<T> {
                      transform.getDefiningOp<memref::ExpandShapeOp>()) {
         cloningMap.map(laReshape->getOperand(0), ret);
         tcopy = b.clone(*laReshape, cloningMap);
+        cast<memref::ExpandShapeOp>(tcopy).result().setType(broadcastExpandShape(ret.getType()));
       } else {
         assert(0);
       }
@@ -269,9 +282,9 @@ template <typename T> struct MILARewritePattern : public OpRewritePattern<T> {
     auto loc = laGeneric.getLoc();
 
     auto pFunc = laGeneric->template getParentOfType<FuncOp>();
-    // if (!pFunc->hasAttr("kernel")) {
-    //   return fail;
-    // }
+    if (!pFunc->hasAttr("kernel")) {
+       return fail;
+    }
     
     // 0. Test compatibility
     // 0.0. Only fully parallel for now
