@@ -26,6 +26,7 @@
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Arithmetic/Transforms/Passes.h"
 #include "mlir/Dialect/MIOpen/Passes.h"
+#include "mlir/Dialect/Tensor/Transforms/Passes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/InitAllPasses.h"
@@ -43,17 +44,22 @@ using namespace mlir;
 void miopen::addHighLevelPipeline(PassManager &pm, bool toMIOpen) {
   // passes for TOSA and bufferization
   if (toMIOpen) {
-    pm.addPass(tosa::createTosaToMIOpenPass());
+    pm.addNestedPass<FuncOp>(tosa::createTosaToMIOpenPass());
   }
-  pm.addPass(tosa::createTosaToLinalgNamed());
-  pm.addPass(tosa::createTosaToLinalg());
-  pm.addPass(createLinalgElementwiseOpFusionPass());
-  pm.addPass(createLinalgBufferizePass());
+  pm.addNestedPass<FuncOp>(tosa::createTosaToLinalgNamed());
+  pm.addNestedPass<FuncOp>(tosa::createTosaToLinalg());
+  pm.addNestedPass<FuncOp>(createLinalgElementwiseOpFusionPass());
+
+  // bufferization
   pm.addPass(arith::createArithmeticBufferizePass());
+  pm.addNestedPass<FuncOp>(createLinalgBufferizePass());
+  pm.addNestedPass<FuncOp>(createTensorBufferizePass());
   pm.addPass(createFuncBufferizePass());
+  pm.addNestedPass<FuncOp>(bufferization::createFinalizingBufferizePass());
+
+  // cleanup
   pm.addPass(bufferization::createBufferResultsToOutParamsPass());
-  pm.addPass(bufferization::createFinalizingBufferizePass());
-  pm.addPass(miopen::createMIOpenCopyOptPass());
+  pm.addNestedPass<FuncOp>(miopen::createMIOpenCopyOptPass());
 }
 
 void miopen::addPipeline(PassManager &pm, bool applicability, bool highLevel) {

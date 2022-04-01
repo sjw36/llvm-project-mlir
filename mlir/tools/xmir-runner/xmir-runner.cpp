@@ -1,4 +1,4 @@
-//===- mlir-rocm-runner.cpp - MLIR ROCM Execution Driver-------------------===//
+//===- xmir-runner.cpp - MLIR XMIR Execution Driver------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -65,7 +65,6 @@ void registerTestDialect(DialectRegistry &);
 } // namespace test
 
 static LogicalResult runMLIRPasses(ModuleOp m) {
-  m.getContext()->disableMultithreading();
   PassManager pm(m.getContext());
   applyPassManagerCLOptions(pm);
 
