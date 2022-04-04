@@ -49,8 +49,9 @@ struct MIOpenAsyncLaunchPass::ThreadTokenCallback {
 
   WalkResult operator()(Block *block) {
     module = block->getParentOp()->getParentOfType<ModuleOp>();
+    SymbolTable symbolTable(module);
     for (Operation &op : make_early_inc_range(*block)) {
-      if (failed(visit(&op)))
+      if (failed(visit(&op, symbolTable)))
         return WalkResult::interrupt();
     }
     return WalkResult::advance();
@@ -65,51 +66,45 @@ private:
   // host-synchronize execution. A `!gpu.async.token` will therefore only be
   // used inside of its block and GPU execution will always synchronize with
   // the host at block boundaries.
-  LogicalResult visit(Operation *op) {
+  LogicalResult visit(Operation *op, SymbolTable &symbolTable) {
     if (auto call = dyn_cast<CallOp>(op)) {
-      CallInterfaceCallable callable = call.getCallableForCallee();
-      if (SymbolRefAttr symRef = callable.dyn_cast<SymbolRefAttr>()) {
-        FuncOp func = module.lookupSymbol<FuncOp>(symRef);
+      CallOpInterface callIf(call);
+      if (auto *callable = callIf.resolveCallable()) { // symbolTable?
+        FuncOp func = dyn_cast<FuncOp>(callable);
         assert(func);
         if (func->hasAttr("kernel")) {
-          assert(0);
           builder.setInsertionPoint(op);
-          return rewriteCallOp(call); // Replace call op with async version.
+          return rewriteCallOp(call, func); // Replace call op with async version.
         }
       }
           
     }
     // Insert host synchronization before terminator or op with side effects.
     if ((isTerminator(op) || hasSideEffects(op)) && currentToken)
-      currentToken = createWaitOp(op->getLoc(), Type(), {currentToken});
+      currentToken = createWaitOp(op->getLoc(), currentToken);
     return success();
   }
 
   // Replaces asyncOp with a clone that returns a token.
-  LogicalResult rewriteCallOp(CallOp op) {
+  LogicalResult rewriteCallOp(CallOp op, FuncOp func) {
     auto loc = op.getLoc();
-    auto tokenType = builder.getType<gpu::AsyncTokenType>();
 
     // Find tokens related to inputs
-    SmallVector<Token, 4> tokens;
+    SmallVector<Value, 4> tokens;
     for (auto operand : op.getOperands()) {
       if (auto fit = op2tokens.lookup(operand)) {
-        tokens.push_back(*fit);
+        tokens.push_back(fit);
       }
     }
 
     // If there is no current token, insert a `gpu.wait async` without
     // dependencies to create one.
-    if (tokens.empty()) {
-      tokens.push_back(createWaitOp(loc, tokenType, {}));
-    }
+    // if (tokens.empty()) {
+    //   tokens.push_back(createWaitOp(loc, Value()));
+    // }
 
     // Clone the op to return a token in addition to the other results.
-    SmallVector<Type, 1> resultTypes;
-    resultTypes.reserve(1 + op->getNumResults());
-    copy(op->getResultTypes(), std::back_inserter(resultTypes));
-    resultTypes.push_back(tokenType);
-    auto alaunch = builder.create<async::LaunchOp>(loc, resultTypes, op->getOperands(), op->getAttrDictionary());
+    auto alaunch = builder.create<async::LaunchOp>(loc, func, tokens, op->getOperands());//, op->getAttrDictionary());
 
     // Clone regions into new op.  NOT NEEDED for CALLOP
     // BlockAndValueMapping mapping;
@@ -118,19 +113,26 @@ private:
 
     // Replace the op with the async clone.
     auto results = alaunch->getResults();
-    op2tokens.emplace(results.back(), results.front());
-    op->replaceAllUsesWith(results.drop_back());
+    op2tokens.insert({results.back(), results.front()});
+    if (results.size() > 1) {
+      op->replaceAllUsesWith(results.drop_front());
+    }
     op->erase();
 
     return success();
   }
 
-  Value createWaitOp(Location loc, Type resultType, ValueRange operands) {
-    return builder.create<gpu::WaitOp>(loc, resultType, operands).asyncToken();
+  Value createWaitOp(Location loc, Value token) {
+    if (!token) {
+      //token = builder.create<async::Token>();
+    }
+    auto op = builder.create<async::AwaitOp>(loc, token);
+    return op.getResults()[0];
   }
 
   OpBuilder builder;
   ModuleOp module;
+  llvm::SmallDenseMap<Value, Value> op2tokens;
 
   // The token that represents the current asynchronous dependency. It's valid
   // range starts with a `gpu.wait async` op, and ends with a `gpu.wait` op.

@@ -24,7 +24,7 @@ def MIOpenApplyImplPass : Pass<"miopen-apply-impl", "ModuleOp"> {
 def MIOpenAsyncLaunchPass : Pass<"miopen-async-launch", "FuncOp"> {
   let summary = "Optimize global tensor allocations";
   let constructor = "mlir::miopen::createMIOpenAsyncLaunchPass()";
-  let dependentDialects = ["miopen::MIOpenDialect", "scf::SCFDialect", "linalg::LinalgDialect", "vector::VectorDialect", "memref::MemRefDialect"];
+  let dependentDialects = ["miopen::MIOpenDialect", "scf::SCFDialect", "linalg::LinalgDialect", "vector::VectorDialect", "memref::MemRefDialect", "async::AsyncDialect"];
 }
 
 def MIOpenOpsStep1Pass : Pass<"miopen-lowering", "ModuleOp"> {

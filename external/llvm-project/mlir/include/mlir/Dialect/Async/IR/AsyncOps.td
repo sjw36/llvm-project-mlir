@@ -15,6 +15,7 @@
 
 include "mlir/Dialect/Async/IR/AsyncDialect.td"
 include "mlir/Dialect/Async/IR/AsyncTypes.td"
+include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
@@ -26,6 +27,64 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 // Base class for the operation in this dialect
 class Async_Op<string mnemonic, list<Trait> traits = []> :
     Op<AsyncDialect, mnemonic, traits>;
+
+def Async_LaunchOp :
+  Async_Op<"launch", [DeclareOpInterfaceMethods<CallOpInterface>, AttrSizedOperandSegments]> {
+  let summary = "Asynchronous execute operation";
+  let description = [{
+    The `body` region attached to the `async.execute` operation semantically
+    can be executed concurrently with the successor operation. In the followup
+    example "compute0" can be executed concurrently with "compute1".
+
+    The actual concurrency semantics depends on the dialect lowering to the
+    executable format. Fully sequential execution ("compute0" completes before
+    "compute1" starts) is a completely legal execution.
+
+    Because concurrent execution is not guaranteed, it is illegal to create an
+    implicit dependency from "compute1" to "compute0" (e.g. via shared global
+    state). All dependencies must be made explicit with async execute arguments
+    (`async.token` or `async.value`).
+
+   `async.execute` operation takes `async.token` dependencies and `async.value`
+    operands separately, and starts execution of the attached body region only
+    when all tokens and values become ready.
+
+    Example:
+
+    ```mlir
+    %dependency = ... : !async.token
+    %value = ... : !async.value<f32>
+
+    %token, %results =
+      async.execute [%dependency](%value as %unwrapped: !async.value<f32>)
+                 -> !async.value<!some.type>
+      {
+        %0 = "compute0"(%unwrapped): (f32) -> !some.type
+        async.yield %0 : !some.type
+      }
+
+    %1 = "compute1"(...) : !some.type
+    ```
+
+    In the example above asynchronous execution starts only after dependency
+    token and value argument become ready. Unwrapped value passed to the
+    attached body region as an %unwrapped value of f32 type.
+  }];
+
+  let arguments = (ins SymbolRefAttr:$callee,
+                       Variadic<Async_TokenType>:$dependencies,
+                       Variadic<AnyType>:$operands);
+
+  let results = (outs Async_TokenType:$token,
+                      Variadic<AnyType>:$results);
+
+  let builders = [
+    OpBuilder<(ins "FuncOp":$kernelFunc, "ValueRange":$dependencies,
+                   "ValueRange":$kernelOperands)>
+  ];
+
+  let hasVerifier = 1;
+}
 
 def Async_ExecuteOp :
   Async_Op<"execute", [SingleBlockImplicitTerminator<"YieldOp">,

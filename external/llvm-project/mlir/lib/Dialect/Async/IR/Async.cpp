@@ -55,10 +55,52 @@ YieldOp::getMutableSuccessorOperands(Optional<unsigned> index) {
 }
 
 //===----------------------------------------------------------------------===//
-/// ExecuteOp
+/// LaunchOp
 //===----------------------------------------------------------------------===//
 
+constexpr char kCallee[] = "callee";
 constexpr char kOperandSegmentSizesAttr[] = "operand_segment_sizes";
+
+void LaunchOp::build(OpBuilder &builder, OperationState &result,
+                     FuncOp func, ValueRange dependencies,
+                     ValueRange operands) {
+  // set callee
+  result.addAttribute(kCallee, SymbolRefAttr::get(func));
+
+  result.addOperands(dependencies);
+  result.addOperands(operands);
+
+  // Add derived `operand_segment_sizes` attribute based on parsed operands.
+  int32_t numDependencies = dependencies.size();
+  int32_t numOperands = operands.size();
+  auto operandSegmentSizes = DenseIntElementsAttr::get(
+      VectorType::get({2}, builder.getIntegerType(32)),
+      {numDependencies, numOperands});
+  result.addAttribute(kOperandSegmentSizesAttr, operandSegmentSizes);
+  
+  // First result is always a token, and then `resultTypes` wrapped into
+  // `async.value`.
+  result.addTypes({TokenType::get(result.getContext())});
+  for (Type type : func.getResultTypes())
+    result.addTypes(type);
+}
+
+CallInterfaceCallable LaunchOp::getCallableForCallee() {
+  return (*this)->getAttrOfType<SymbolRefAttr>(kCallee);
+}
+
+Operation::operand_range LaunchOp::getArgOperands() {
+  return operands();
+}
+
+LogicalResult LaunchOp::verify() {
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+/// ExecuteOp
+//===----------------------------------------------------------------------===//
 
 OperandRange ExecuteOp::getSuccessorEntryOperands(unsigned index) {
   assert(index == 0 && "invalid region index");
