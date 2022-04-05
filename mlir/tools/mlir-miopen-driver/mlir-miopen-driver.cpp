@@ -263,7 +263,8 @@ int main(int argc, char **argv) {
   context.loadDialect<miopen::MIOpenDialect, StandardOpsDialect,
                       scf::SCFDialect, AffineDialect, memref::MemRefDialect,
                       math::MathDialect, arith::ArithmeticDialect,
-                      gpu::GPUDialect, bufferization::BufferizationDialect>();
+                      gpu::GPUDialect, bufferization::BufferizationDialect,
+                      async::AsyncDialect>();
   mlir::registerAllPasses();
   mlir::registerMIOpenConversionPasses();
   miopen::registerPasses();

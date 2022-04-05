@@ -11,6 +11,15 @@
 
 include "mlir/Pass/PassBase.td"
 
+def AsyncBufferize : Pass<"async-bufferize", "FuncOp"> {
+  let summary = "yadda yahha";
+  let description = [{
+  }];
+
+  let constructor = "mlir::createAsyncBufferizePass()";
+  let dependentDialects = ["async::AsyncDialect"];
+}
+
 def AsyncParallelFor : Pass<"async-parallel-for", "ModuleOp"> {
   let summary = "Convert scf.parallel operations to multiple async compute ops "
                 "executed concurrently for non-overlapping iteration ranges";

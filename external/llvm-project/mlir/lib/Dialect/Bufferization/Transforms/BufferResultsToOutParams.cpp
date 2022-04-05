@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PassDetail.h"
+#include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
@@ -84,6 +85,7 @@ static void updateReturnOps(FuncOp func,
 // temporary buffers for newly introduced out params.
 static LogicalResult updateCalls(ModuleOp module) {
   bool didFail = false;
+  //module.walk([&](CallOpInterface op) { // TODO(sjw): consolidate on interface
   module.walk([&](CallOp op) {
     SmallVector<Value, 6> replaceWithNewCallResults;
     SmallVector<Value, 6> replaceWithOutParams;
@@ -114,6 +116,54 @@ static LogicalResult updateCalls(ModuleOp module) {
         replaceWithNewCallResults, [](Value v) { return v.getType(); }));
     auto newCall = builder.create<CallOp>(op.getLoc(), op.getCalleeAttr(),
                                           newResultTypes, newOperands);
+    for (auto t : llvm::zip(replaceWithNewCallResults, newCall.getResults()))
+      std::get<0>(t).replaceAllUsesWith(std::get<1>(t));
+    op.erase();
+  });
+
+  module.walk([&](async::LaunchOp op) {
+    SmallVector<Value, 6> replaceWithNewCallResults;
+    SmallVector<Value, 6> replaceWithOutParams;
+    for (OpResult result : op.getResults()) {
+      if (result.getType().isa<BaseMemRefType>())
+        replaceWithOutParams.push_back(result);
+      else
+        replaceWithNewCallResults.push_back(result);
+    }
+    SmallVector<Value, 6> outParams;
+    OpBuilder builder(op);
+    for (Value memref : replaceWithOutParams) {
+      if (!memref.getType().cast<BaseMemRefType>().hasStaticShape()) {
+        op.emitError()
+            << "cannot create out param for dynamically shaped result";
+        didFail = true;
+        return;
+      }
+      Value outParam = builder.create<memref::AllocOp>(
+          op.getLoc(), memref.getType().cast<MemRefType>());
+      memref.replaceAllUsesWith(outParam);
+      outParams.push_back(outParam);
+    }
+
+    CallOpInterface callIf(op);
+    auto *callable = callIf.resolveCallable();
+    FuncOp func = dyn_cast<FuncOp>(callable);
+    assert(func);
+
+    SmallVector<Value, 6> newDeps;
+    SmallVector<Value, 6> newOprs;
+    for (auto operand : op.getOperands()) {
+      if (operand.getType().isa<async::TokenType>()) {
+        newDeps.push_back(operand);
+        assert(newOprs.size() == 0);
+      } else {
+        newOprs.push_back(operand);
+      }
+    }
+    newOprs.append(outParams.begin(), outParams.end());
+    auto newResultTypes = llvm::to_vector<6>(llvm::map_range(
+        replaceWithNewCallResults, [](Value v) { return v.getType(); }));
+    auto newCall = builder.create<async::LaunchOp>(op.getLoc(), func, newDeps, newOprs);
     for (auto t : llvm::zip(replaceWithNewCallResults, newCall.getResults()))
       std::get<0>(t).replaceAllUsesWith(std::get<1>(t));
     op.erase();

@@ -25,6 +25,7 @@
 #include "mlir/Conversion/MIOpenPasses.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Arithmetic/Transforms/Passes.h"
+#include "mlir/Dialect/Async/Passes.h"
 #include "mlir/Dialect/MIOpen/Passes.h"
 #include "mlir/Dialect/Tensor/Transforms/Passes.h"
 #include "mlir/IR/Builders.h"
@@ -48,6 +49,7 @@ void miopen::addHighLevelPipeline(PassManager &pm, bool toMIOpen) {
   }
   pm.addNestedPass<FuncOp>(tosa::createTosaToLinalgNamed());
   pm.addNestedPass<FuncOp>(tosa::createTosaToLinalg());
+  pm.addNestedPass<FuncOp>(createMIOpenAsyncLaunchPass());
   pm.addNestedPass<FuncOp>(createLinalgElementwiseOpFusionPass());
 
   // bufferization
@@ -55,6 +57,7 @@ void miopen::addHighLevelPipeline(PassManager &pm, bool toMIOpen) {
   pm.addNestedPass<FuncOp>(createLinalgBufferizePass());
   pm.addNestedPass<FuncOp>(createTensorBufferizePass());
   pm.addPass(createFuncBufferizePass());
+  pm.addNestedPass<FuncOp>(createAsyncBufferizePass());
   pm.addNestedPass<FuncOp>(bufferization::createFinalizingBufferizePass());
 
   // cleanup

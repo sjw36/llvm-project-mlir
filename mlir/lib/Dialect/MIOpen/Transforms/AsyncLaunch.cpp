@@ -67,21 +67,31 @@ private:
   // used inside of its block and GPU execution will always synchronize with
   // the host at block boundaries.
   LogicalResult visit(Operation *op, SymbolTable &symbolTable) {
+    builder.setInsertionPoint(op);
     if (auto call = dyn_cast<CallOp>(op)) {
       CallOpInterface callIf(call);
       if (auto *callable = callIf.resolveCallable()) { // symbolTable?
         FuncOp func = dyn_cast<FuncOp>(callable);
         assert(func);
         if (func->hasAttr("kernel")) {
-          builder.setInsertionPoint(op);
           return rewriteCallOp(call, func); // Replace call op with async version.
         }
       }
-          
+    }
+    // Insert host sync before operation that reads an async::value
+    for (auto operand : op->getOperands()) {
+      if (auto itoken = op2tokens.lookup(operand)) {
+        createWaitOp(op->getLoc(), itoken);
+      }
     }
     // Insert host synchronization before terminator or op with side effects.
-    if ((isTerminator(op) || hasSideEffects(op)) && currentToken)
-      currentToken = createWaitOp(op->getLoc(), currentToken);
+    if ((isTerminator(op) || hasSideEffects(op)) && currentTokens.size()) {
+      for (auto token : currentTokens) {
+        createWaitOp(op->getLoc(), token);
+      }
+      currentTokens.clear();
+    }
+    
     return success();
   }
 
@@ -92,28 +102,21 @@ private:
     // Find tokens related to inputs
     SmallVector<Value, 4> tokens;
     for (auto operand : op.getOperands()) {
-      if (auto fit = op2tokens.lookup(operand)) {
-        tokens.push_back(fit);
+      if (auto itoken = op2tokens.lookup(operand)) {
+        tokens.push_back(itoken);
+        currentTokens.erase(itoken);
       }
     }
-
-    // If there is no current token, insert a `gpu.wait async` without
-    // dependencies to create one.
-    // if (tokens.empty()) {
-    //   tokens.push_back(createWaitOp(loc, Value()));
-    // }
 
     // Clone the op to return a token in addition to the other results.
     auto alaunch = builder.create<async::LaunchOp>(loc, func, tokens, op->getOperands());//, op->getAttrDictionary());
 
-    // Clone regions into new op.  NOT NEEDED for CALLOP
-    // BlockAndValueMapping mapping;
-    // for (auto pair : llvm::zip_first(op->getRegions(), newOp->getRegions()))
-    //   std::get<0>(pair).cloneInto(&std::get<1>(pair), mapping);
-
     // Replace the op with the async clone.
     auto results = alaunch->getResults();
+    assert(results.size() <= 2);
     op2tokens.insert({results.back(), results.front()});
+    currentTokens.insert(results.front());
+    
     if (results.size() > 1) {
       op->replaceAllUsesWith(results.drop_front());
     }
@@ -123,23 +126,19 @@ private:
   }
 
   Value createWaitOp(Location loc, Value token) {
-    if (!token) {
-      //token = builder.create<async::Token>();
-    }
+    assert(token);
     auto op = builder.create<async::AwaitOp>(loc, token);
-    return op.getResults()[0];
+    auto results = op.getResults();
+    if (results.size())
+      return op.getResults()[0];
+    return Value();
   }
 
   OpBuilder builder;
   ModuleOp module;
   llvm::SmallDenseMap<Value, Value> op2tokens;
 
-  // The token that represents the current asynchronous dependency. It's valid
-  // range starts with a `gpu.wait async` op, and ends with a `gpu.wait` op.
-  // In between, each gpu::AsyncOpInterface depends on the current token and
-  // produces the new one.
-  Value currentToken = {};
-
+  llvm::SmallDenseSet<Value> currentTokens;
 };
 
 /// Erases `executeOp` and returns a clone with additional `results`.
@@ -339,9 +338,9 @@ void MIOpenAsyncLaunchPass::runOnOperation() {
     return signalPassFailure();
 
   // Collect gpu.wait ops that we can move out of async.execute regions.
-  getOperation().getRegion().walk(DeferWaitCallback());
+  // getOperation().getRegion().walk(DeferWaitCallback());
   // Makes each !gpu.async.token returned from async.execute op have single use.
-  getOperation().getRegion().walk(SingleTokenUseCallback());
+  // getOperation().getRegion().walk(SingleTokenUseCallback());
 }
 
 std::unique_ptr<Pass> mlir::miopen::createMIOpenAsyncLaunchPass() {

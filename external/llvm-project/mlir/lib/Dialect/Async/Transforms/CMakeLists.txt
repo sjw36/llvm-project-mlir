@@ -1,4 +1,5 @@
 add_mlir_dialect_library(MLIRAsyncTransforms
+  AsyncBufferize.cpp
   AsyncParallelFor.cpp
   AsyncRuntimeRefCounting.cpp
   AsyncRuntimeRefCountingOpt.cpp
@@ -14,6 +15,7 @@ add_mlir_dialect_library(MLIRAsyncTransforms
   LINK_LIBS PUBLIC
   MLIRArithmetic
   MLIRAsync
+  MLIRBufferizationTransforms
   MLIRIR
   MLIRPass
   MLIRSCF
