@@ -71,7 +71,7 @@ def Async_LaunchOp :
     attached body region as an %unwrapped value of f32 type.
   }];
 
-  let arguments = (ins SymbolRefAttr:$callee,
+  let arguments = (ins FlatSymbolRefAttr:$callee,
                        Variadic<Async_TokenType>:$dependencies,
                        Variadic<AnyType>:$operands);
 
@@ -80,9 +80,17 @@ def Async_LaunchOp :
 
   let builders = [
     OpBuilder<(ins "FuncOp":$kernelFunc, "ValueRange":$dependencies,
-                   "ValueRange":$kernelOperands)>
+                   "ValueRange":$kernelOperands)>,
+    OpBuilder<(ins "FuncOp":$kernelFunc, "ValueRange":$operands)>,
+    OpBuilder<(ins "FlatSymbolRefAttr":$callee, "TypeRange":$results,
+      CArg<"ValueRange", "{}">:$operands), [{
+      $_state.addOperands(operands);
+      $_state.addAttribute("callee", callee);
+      $_state.addTypes(results);
+    }]>,
   ];
 
+  let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }
 

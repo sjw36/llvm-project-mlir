@@ -93,6 +93,93 @@ Operation::operand_range LaunchOp::getArgOperands() {
   return operands();
 }
 
+void LaunchOp::print(OpAsmPrinter &p) {
+  // func ref
+  p << " " << (*this)->getAttr(kCallee);
+  
+  // [%tokens,...]
+  if (!dependencies().empty())
+    p << " [" << dependencies() << "]";
+
+  // (%value, ...)
+  p << " (" << operands() << ")";
+
+  p.printOptionalAttrDictWithKeyword((*this)->getAttrs(),
+                                     {kOperandSegmentSizesAttr, kCallee});
+
+  // : (%value.type, ...)
+  p << " : (";
+  llvm::interleaveComma(operands(), p, [&](Value operand) mutable {
+      p << operand.getType();
+    });
+  p << ")";
+  
+  // -> (return.type, ...)
+  p.printOptionalArrowTypeList(llvm::drop_begin(getResultTypes()));
+
+}
+
+ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
+  MLIRContext *ctx = result.getContext();
+  auto tokenTy = TokenType::get(ctx);
+
+  FlatSymbolRefAttr calleeAttr;
+  SmallVector<OpAsmParser::OperandType, 4> operandsOperands;
+  SMLoc operandsOperandsLoc;
+  ArrayRef<Type> operandsTypes;
+  SmallVector<Type, 4> allResultTypes(1, tokenTy);
+
+  if (parser.parseCustomAttributeWithFallback(calleeAttr,
+          parser.getBuilder().getType<::mlir::NoneType>(), "callee",
+          result.attributes)) {
+    return ::mlir::failure();
+  }
+
+  // Parse dependency tokens.
+  int32_t numDependencies = 0;
+  if (succeeded(parser.parseOptionalLSquare())) {
+    SmallVector<OpAsmParser::OperandType, 4> tokenArgs;
+    if (parser.parseOperandList(tokenArgs) ||
+        parser.resolveOperands(tokenArgs, tokenTy, result.operands) ||
+        parser.parseRSquare())
+      return failure();
+
+    numDependencies = tokenArgs.size();
+  }
+
+  if (parser.parseLParen())
+    return failure();
+  operandsOperandsLoc = parser.getCurrentLocation();
+  if (parser.parseOperandList(operandsOperands))
+    return failure();
+  if (parser.parseRParen())
+    return failure();
+
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  if (parser.parseColon())
+    return failure();
+
+  FunctionType operands__allResult_functionType;
+  if (parser.parseType(operands__allResult_functionType))
+    return failure();
+  operandsTypes = operands__allResult_functionType.getInputs();
+  auto resultTypes = operands__allResult_functionType.getResults();
+  allResultTypes.append(resultTypes.begin(), resultTypes.end());
+  result.addTypes(allResultTypes);
+  if (parser.resolveOperands(operandsOperands, operandsTypes, operandsOperandsLoc, result.operands))
+    return failure();
+
+  // Add derived `operand_segment_sizes` attribute based on parsed operands.
+  int32_t numOperands = result.operands.size() - numDependencies;
+  auto operandSegmentSizes = DenseIntElementsAttr::get(
+      VectorType::get({2}, IntegerType::get(ctx, 32)),
+      {numDependencies, numOperands});
+  result.addAttribute(kOperandSegmentSizesAttr, operandSegmentSizes);
+
+  return success();
+}
+
 LogicalResult LaunchOp::verify() {
 
   return success();

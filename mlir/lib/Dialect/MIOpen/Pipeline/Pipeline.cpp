@@ -43,7 +43,7 @@ using namespace mlir;
 //===- Consolidate the MIOpen Pipelines here ---------------------===//
 
 void miopen::addHighLevelPipeline(PassManager &pm, bool toMIOpen) {
-  // passes for TOSA and bufferization
+  // passes for TOSA conversion
   if (toMIOpen) {
     pm.addNestedPass<FuncOp>(tosa::createTosaToMIOpenPass());
   }
