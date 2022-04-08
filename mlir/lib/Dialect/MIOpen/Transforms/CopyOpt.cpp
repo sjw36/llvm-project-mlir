@@ -87,7 +87,7 @@ template <typename T> struct MICORewritePattern : public OpRewritePattern<T> {
         if (cnt != 1)
           return fail;
         writer = mrop;
-      } else if (auto callop = dyn_cast<CallOp>(use.getOwner())) {
+      } else if (auto callop = dyn_cast<CallOpInterface>(use.getOwner())) {
         // 1.3 Assume call is the writer (fails for multiple calls)
         if (writer)
           return fail;
