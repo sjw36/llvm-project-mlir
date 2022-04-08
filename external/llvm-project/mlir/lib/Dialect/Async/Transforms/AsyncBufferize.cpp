@@ -8,9 +8,9 @@
 
 #include "PassDetail.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Async/Passes.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
@@ -34,9 +34,8 @@ class BufferizeLaunchOp : public OpConversionPattern<async::LaunchOp> {
 public:
   using OpConversionPattern<async::LaunchOp>::OpConversionPattern;
 
-  LogicalResult
-  matchAndRewrite(async::LaunchOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rw) const final {
+  LogicalResult matchAndRewrite(async::LaunchOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rw) const final {
 
     // 0. Split input operands into dependencies(tokens) and operands(data)
     SmallVector<Value, 5> deps;
@@ -62,7 +61,7 @@ public:
     newCall->setAttrs(op->getAttrs());
 
     rw.replaceOp(op, newCall.getResults());
-    
+
     return success();
   }
 };
@@ -89,7 +88,7 @@ struct AsyncBufferizePass : public AsyncBufferizeBase<AsyncBufferizePass> {
     RewritePatternSet patterns(&context);
     patterns.add<BufferizeLaunchOp>(typeConverter, &context);
     if (failed(applyPartialConversion(getOperation(), target,
-                                   std::move(patterns))))
+                                      std::move(patterns))))
       signalPassFailure();
   }
 };
@@ -98,4 +97,3 @@ struct AsyncBufferizePass : public AsyncBufferizeBase<AsyncBufferizePass> {
 std::unique_ptr<OperationPass<FuncOp>> mlir::createAsyncBufferizePass() {
   return std::make_unique<AsyncBufferizePass>();
 }
-

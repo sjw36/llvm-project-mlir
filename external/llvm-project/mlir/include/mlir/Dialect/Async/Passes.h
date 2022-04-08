@@ -18,7 +18,7 @@
 namespace mlir {
 
 std::unique_ptr<OperationPass<FuncOp>> createAsyncBufferizePass();
-  
+
 std::unique_ptr<Pass> createAsyncParallelForPass();
 
 std::unique_ptr<Pass> createAsyncParallelForPass(bool asyncDispatch,

@@ -27,7 +27,8 @@
 
 using namespace mlir;
 namespace {
-class MIOpenAsyncLaunchPass : public MIOpenAsyncLaunchPassBase<MIOpenAsyncLaunchPass> {
+class MIOpenAsyncLaunchPass
+    : public MIOpenAsyncLaunchPassBase<MIOpenAsyncLaunchPass> {
   struct ThreadTokenCallback;
   struct DeferWaitCallback;
   struct SingleTokenUseCallback;
@@ -74,7 +75,8 @@ private:
         FuncOp func = dyn_cast<FuncOp>(callable);
         assert(func);
         if (func->hasAttr("kernel")) {
-          return rewriteCallOp(call, func); // Replace call op with async version.
+          return rewriteCallOp(call,
+                               func); // Replace call op with async version.
         }
       }
     }
@@ -91,7 +93,7 @@ private:
       }
       currentTokens.clear();
     }
-    
+
     return success();
   }
 
@@ -109,14 +111,15 @@ private:
     }
 
     // Clone the op to return a token in addition to the other results.
-    auto alaunch = builder.create<async::LaunchOp>(loc, func, tokens, op->getOperands());//, op->getAttrDictionary());
+    auto alaunch = builder.create<async::LaunchOp>(
+        loc, func, tokens, op->getOperands()); //, op->getAttrDictionary());
 
     // Replace the op with the async clone.
     auto results = alaunch->getResults();
     assert(results.size() <= 2);
     op2tokens.insert({results.back(), results.front()});
     currentTokens.insert(results.front());
-    
+
     if (results.size() > 1) {
       op->replaceAllUsesWith(results.drop_front());
     }

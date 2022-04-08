@@ -117,16 +117,18 @@ static LogicalResult updateCalls(ModuleOp module) {
 
     // update segment sizes (add to last group)
     const char *kOperandSegmentSizes = "operand_segment_sizes";
-    if (auto attr = newOp->getAttr(kOperandSegmentSizes).cast<DenseIntElementsAttr>()) {
+    if (auto attr =
+            newOp->getAttr(kOperandSegmentSizes).cast<DenseIntElementsAttr>()) {
       assert(attr.size());
-      auto newCount = std::count_if(outParams.begin(), outParams.end(), [](auto) { return true; });
+      auto newCount = std::count_if(outParams.begin(), outParams.end(),
+                                    [](auto) { return true; });
       SmallVector<int32_t, 4> vals;
       for (auto v : attr.getValues<APInt>())
         vals.push_back(v.getZExtValue());
       vals[vals.size() - 1] += newCount;
       newOp->setAttr(kOperandSegmentSizes, builder.getI32VectorAttr(vals));
     }
-    
+
     for (auto t : llvm::zip(replaceWithNewCallResults, newOp->getResults()))
       std::get<0>(t).replaceAllUsesWith(std::get<1>(t));
     op.erase();
