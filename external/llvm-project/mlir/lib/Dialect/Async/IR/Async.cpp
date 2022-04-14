@@ -198,9 +198,20 @@ LogicalResult LaunchOp::verify() {
     return emitOpError(
         "requires matching result types with a leading async.token");
 
+  auto compareTypes = [](Type type0, Type type1) {
+    if (type0 != type1) {
+      auto type0Shape = type0.dyn_cast_or_null<ShapedType>();
+      auto type1Shape = type1.dyn_cast_or_null<ShapedType>();
+      if (!type0Shape || !type1Shape || type0Shape.getShape() != type1Shape.getShape() ||
+          type0Shape.getElementType() != type1Shape.getElementType())
+        return false;
+    }
+    return true;
+  };
+
   auto resultItr = ++resultTypes.begin();
   for (auto resType : funcType.getResults()) {
-    if (*(resultItr++) != resType)
+    if (!compareTypes(*resultItr++, resType))
       return emitOpError("requires matching result types with func");
   }
 
@@ -211,8 +222,11 @@ LogicalResult LaunchOp::verify() {
   }
 
   // Match operand types
+  if (funcType.getNumInputs() != operands().size())
+    return emitOpError("incorrect number of operands for callee");
+  
   for (auto tuple : llvm::zip(operands(), funcType.getInputs())) {
-    if (std::get<0>(tuple).getType() != std::get<1>(tuple))
+    if (!compareTypes(std::get<0>(tuple).getType(), std::get<1>(tuple)))
       return emitOpError("requires matching operand types");
   }
 

@@ -15,23 +15,30 @@ using namespace mlir;
 namespace {
 /// Converts the operand and result types of the Standard's CallOp, used
 /// together with the FuncOpSignatureConversion.
-struct CallOpSignatureConversion : public OpConversionPattern<CallOp> {
-  using OpConversionPattern<CallOp>::OpConversionPattern;
+struct CallOpSignatureConversion : public OpInterfaceConversionPattern<CallOpInterface> {
+  using OpInterfaceConversionPattern<CallOpInterface>::OpInterfaceConversionPattern;
+
+  /// Attempt to match against code rooted at the specified operation,
+  /// which is the same operation code as getRootKind().
+  //virtual LogicalResult match(Operation *op) const;
 
   /// Hook for derived classes to implement combined matching and rewriting.
   LogicalResult
-  matchAndRewrite(CallOp callOp, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    // Convert the original function results.
-    SmallVector<Type, 1> convertedResults;
-    if (failed(typeConverter->convertTypes(callOp.getResultTypes(),
-                                           convertedResults)))
-      return failure();
+  matchAndRewrite(CallOpInterface op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const final {
+    if (!typeConverter->isLegal(op)) {
+      // Convert the original function results.
+      SmallVector<Type, 1> convertedResults;
+      if (failed(typeConverter->convertTypes(op->getResultTypes(),
+                                             convertedResults)))
+        return failure();
 
-    // Substitute with the new result types from the corresponding FuncType
-    // conversion.
-    rewriter.replaceOpWithNewOp<CallOp>(
-        callOp, callOp.getCallee(), convertedResults, adaptor.getOperands());
+      // Substitute with the new result types from the corresponding FuncType
+      // conversion.
+      auto *newOp = op.clone(rewriter, op->getLoc(), convertedResults, operands);
+
+      rewriter.replaceOp(op, newOp->getResults());
+    }
     return success();
   }
 };

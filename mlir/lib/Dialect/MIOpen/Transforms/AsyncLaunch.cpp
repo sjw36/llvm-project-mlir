@@ -1,4 +1,4 @@
-//===- AsyncRegionRewriter.cpp - Implementation of GPU async rewriters ----===//
+//===- AsyncLaunch.cpp - Convert kernel func call ops to async.launch -----===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,16 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements the GPU dialect pattern rewriters that make GPU op
-// within a region execute asynchronously.
+// This file implements the async.launch pattern rewriter that converts kernel
+// call ops to async.launch ops with inferred data-dependency converted to
+// explicit async.token based dependence graph.
 //
 //===----------------------------------------------------------------------===//
 
 #include "PassDetail.h"
 #include "mlir/Dialect/Async/IR/Async.h"
-#include "mlir/Dialect/GPU/GPUDialect.h"
-#include "mlir/Dialect/GPU/Passes.h"
-#include "mlir/Dialect/GPU/Utils.h"
 #include "mlir/Dialect/MIOpen/Passes.h"
 #include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/Builders.h"
@@ -29,36 +27,17 @@ using namespace mlir;
 namespace {
 class MIOpenAsyncLaunchPass
     : public MIOpenAsyncLaunchPassBase<MIOpenAsyncLaunchPass> {
-  struct ThreadTokenCallback;
-  struct DeferWaitCallback;
-  struct SingleTokenUseCallback;
-  void runOnOperation() override;
-};
-} // namespace
 
-static bool isTerminator(Operation *op) {
-  return op->mightHaveTrait<OpTrait::IsTerminator>();
-}
-static bool hasSideEffects(Operation *op) {
-  return !MemoryEffectOpInterface::hasNoEffect(op);
-}
-
-// Region walk callback which makes GPU ops implementing the AsyncOpInterface
-// execute asynchronously.
-struct MIOpenAsyncLaunchPass::ThreadTokenCallback {
-  ThreadTokenCallback(MLIRContext &context) : builder(&context) {}
-
-  WalkResult operator()(Block *block) {
-    module = block->getParentOp()->getParentOfType<ModuleOp>();
-    SymbolTable symbolTable(module);
-    for (Operation &op : make_early_inc_range(*block)) {
-      if (failed(visit(&op, symbolTable)))
-        return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
+  static bool isTerminator(Operation *op) {
+    return op->mightHaveTrait<OpTrait::IsTerminator>();
+  }
+  static bool hasSideEffects(Operation *op) {
+    return !MemoryEffectOpInterface::hasNoEffect(op);
   }
 
-private:
+  llvm::SmallDenseMap<Value, Value> res2tokens;
+  llvm::SmallDenseSet<Value> currentTokens;
+
   // If `op` implements the AsyncOpInterface, insert a `gpu.wait async` to
   // create a current token (unless it already exists), and 'thread' that token
   // through the `op` so that it executes asynchronously.
@@ -67,29 +46,28 @@ private:
   // host-synchronize execution. A `!gpu.async.token` will therefore only be
   // used inside of its block and GPU execution will always synchronize with
   // the host at block boundaries.
-  LogicalResult visit(Operation *op, SymbolTable &symbolTable) {
-    builder.setInsertionPoint(op);
+  LogicalResult visit(Operation *op) {
     if (auto call = dyn_cast<CallOp>(op)) {
       CallOpInterface callIf(call);
-      if (auto *callable = callIf.resolveCallable()) { // symbolTable?
+      if (auto *callable = callIf.resolveCallable()) {
         FuncOp func = dyn_cast<FuncOp>(callable);
         assert(func);
         if (func->hasAttr("kernel")) {
-          return rewriteCallOp(call,
-                               func); // Replace call op with async version.
+          // Replace call op with async version.
+          return rewriteCallOp(call, func);
         }
       }
     }
     // Insert host sync before operation that reads an async::value
     for (auto operand : op->getOperands()) {
-      if (auto itoken = op2tokens.lookup(operand)) {
-        createWaitOp(op->getLoc(), itoken);
+      if (auto itoken = res2tokens.lookup(operand)) {
+        createWaitOp(op, itoken);
       }
     }
     // Insert host synchronization before terminator or op with side effects.
     if ((isTerminator(op) || hasSideEffects(op)) && currentTokens.size()) {
       for (auto token : currentTokens) {
-        createWaitOp(op->getLoc(), token);
+        createWaitOp(op, token);
       }
       currentTokens.clear();
     }
@@ -99,252 +77,70 @@ private:
 
   // Replaces asyncOp with a clone that returns a token.
   LogicalResult rewriteCallOp(CallOp op, FuncOp func) {
-    auto loc = op.getLoc();
-
+    OpBuilder builder(op);
+    //builder.setInsertionPoint(op);
     // Find tokens related to inputs
     SmallVector<Value, 4> tokens;
     for (auto operand : op.getOperands()) {
-      if (auto itoken = op2tokens.lookup(operand)) {
+      if (auto itoken = res2tokens.lookup(operand)) {
         tokens.push_back(itoken);
+
+        // remove tokens that are consumed, the chain will satisfy the
+        // final block await
         currentTokens.erase(itoken);
       }
     }
 
     // Clone the op to return a token in addition to the other results.
     auto alaunch = builder.create<async::LaunchOp>(
-        loc, func, tokens, op->getOperands()); //, op->getAttrDictionary());
+        op.getLoc(), func, tokens, op->getOperands());
 
     // Replace the op with the async clone.
     auto results = alaunch->getResults();
-    assert(results.size() <= 2);
-    op2tokens.insert({results.back(), results.front()});
-    currentTokens.insert(results.front());
+    auto token = results.front();
+    results = results.drop_front();
 
-    if (results.size() > 1) {
-      op->replaceAllUsesWith(results.drop_front());
-    }
+    // associate all results with the result token
+    for (auto res : results)
+      res2tokens.insert({res, token});
+    
+    currentTokens.insert(token);
+
+    op->replaceAllUsesWith(results);
     op->erase();
 
     return success();
   }
 
-  Value createWaitOp(Location loc, Value token) {
+  Value createWaitOp(Operation *op, Value token) {
+    Value res;
     assert(token);
-    auto op = builder.create<async::AwaitOp>(loc, token);
-    auto results = op.getResults();
+    OpBuilder builder(op);
+    auto awaitOp = builder.create<async::AwaitOp>(op->getLoc(), token);
+    auto results = awaitOp.getResults();
     if (results.size())
-      return op.getResults()[0];
-    return Value();
+      res = results.front();
+    return res;
   }
 
-  OpBuilder builder;
-  ModuleOp module;
-  llvm::SmallDenseMap<Value, Value> op2tokens;
-
-  llvm::SmallDenseSet<Value> currentTokens;
-};
-
-/// Erases `executeOp` and returns a clone with additional `results`.
-async::ExecuteOp addExecuteResults(async::ExecuteOp executeOp,
-                                   ValueRange results) {
-  // Add values to async.yield op.
-  Operation *yieldOp = executeOp.getBody()->getTerminator();
-  yieldOp->insertOperands(yieldOp->getNumOperands(), results);
-
-  // Construct new result type list with additional types.
-  SmallVector<Type, 2> resultTypes;
-  resultTypes.reserve(executeOp.getNumResults() + results.size());
-  transform(executeOp.getResultTypes(), std::back_inserter(resultTypes),
-            [](Type type) {
-              // Extract value type from !async.value.
-              if (auto valueType = type.dyn_cast<async::ValueType>())
-                return valueType.getValueType();
-              assert(type.isa<async::TokenType>() && "expected token type");
-              return type;
-            });
-  transform(results, std::back_inserter(resultTypes),
-            [](Value value) { return value.getType(); });
-
-  // Clone executeOp with the extra results.
-  OpBuilder builder(executeOp);
-  auto newOp = builder.create<async::ExecuteOp>(
-      executeOp.getLoc(), TypeRange{resultTypes}.drop_front() /*drop token*/,
-      executeOp.dependencies(), executeOp.operands());
-  BlockAndValueMapping mapper;
-  newOp.getRegion().getBlocks().clear();
-  executeOp.getRegion().cloneInto(&newOp.getRegion(), mapper);
-
-  // Replace executeOp with cloned one.
-  executeOp.getOperation()->replaceAllUsesWith(
-      newOp.getResults().drop_back(results.size()));
-  executeOp.erase();
-
-  return newOp;
-}
-
-// Callback for `async.execute` ops which tries to push the contained
-// synchronous `gpu.wait` op to the dependencies of the `async.execute`.
-struct MIOpenAsyncLaunchPass::DeferWaitCallback {
-  // If the `executeOp`s token is used only in `async.execute` or `async.await`
-  // ops, add the region's last `gpu.wait` op to the worklist if it is
-  // synchronous and is the last op with side effects.
-  void operator()(async::ExecuteOp executeOp) {
-    if (!areAllUsersExecuteOrAwait(executeOp.token()))
-      return;
-    // async.execute's region is currently restricted to one block.
-    for (auto &op : llvm::reverse(executeOp.getBody()->without_terminator())) {
-      if (auto waitOp = dyn_cast<gpu::WaitOp>(op)) {
-        if (!waitOp.asyncToken())
-          worklist.push_back(waitOp);
-        return;
+public:
+  // Replaces synchronous GPU ops in the op's region with asynchronous ones and
+  // inserts the necessary synchronization (as gpu.wait ops). Assumes sequential
+  // execution semantics and that no GPU ops are asynchronous yet.
+  void runOnOperation() override {
+    auto walker = [this](Block *block) {
+      for (Operation &op : make_early_inc_range(*block)) {
+        if (failed(visit(&op)))
+          return WalkResult::interrupt();
       }
-      if (hasSideEffects(&op))
-        return;
-    }
-  }
+      return WalkResult::advance();
+    };
 
-  // The destructor performs the actual rewrite work.
-  ~DeferWaitCallback() {
-    for (size_t i = 0; i < worklist.size(); ++i) {
-      auto waitOp = worklist[i];
-      auto executeOp = waitOp->getParentOfType<async::ExecuteOp>();
-
-      // Erase `gpu.wait` and return async dependencies from execute op instead.
-      SmallVector<Value, 4> dependencies = waitOp.asyncDependencies();
-      waitOp.erase();
-      executeOp = addExecuteResults(executeOp, dependencies);
-
-      // Add the async dependency to each user of the `async.execute` token.
-      auto asyncTokens = executeOp.getResults().take_back(dependencies.size());
-      for (Operation *user : executeOp.token().getUsers())
-        addAsyncDependencyAfter(asyncTokens, user);
-    }
-  }
-
-private:
-  // Returns whether all token users are either 'async.execute' or 'async.await'
-  // ops. This is used as a requirement for pushing 'gpu.wait' ops from a
-  // 'async.execute' body to it's users. Specifically, we do not allow
-  // terminator users, because it could mean that the `async.execute` is inside
-  // control flow code.
-  static bool areAllUsersExecuteOrAwait(Value token) {
-    return !token.use_empty() &&
-           llvm::all_of(token.getUsers(), [](Operation *user) {
-             return isa<async::ExecuteOp, async::AwaitOp>(user);
-           });
-  }
-
-  // Add the `asyncToken` as dependency as needed after `op`.
-  void addAsyncDependencyAfter(ValueRange asyncTokens, Operation *op) {
-    OpBuilder builder(op->getContext());
-    auto loc = op->getLoc();
-
-    Block::iterator it;
-    SmallVector<Value, 1> tokens;
-    tokens.reserve(asyncTokens.size());
-    TypeSwitch<Operation *>(op)
-        .Case<async::AwaitOp>([&](auto awaitOp) {
-          // Add async.await ops to wait for the !gpu.async.tokens.
-          builder.setInsertionPointAfter(op);
-          for (auto asyncToken : asyncTokens)
-            tokens.push_back(
-                builder.create<async::AwaitOp>(loc, asyncToken).result());
-          // Set `it` after the inserted async.await ops.
-          it = builder.getInsertionPoint();
-        })
-        .Case<async::ExecuteOp>([&](auto executeOp) {
-          // Set `it` to the beginning of the region and add asyncTokens to the
-          // async.execute operands.
-          it = executeOp.getBody()->begin();
-          executeOp.operandsMutable().append(asyncTokens);
-          SmallVector<Type, 1> tokenTypes(
-              asyncTokens.size(), builder.getType<gpu::AsyncTokenType>());
-          SmallVector<Location, 1> tokenLocs(asyncTokens.size(),
-                                             executeOp.getLoc());
-          copy(executeOp.getBody()->addArguments(tokenTypes, tokenLocs),
-               std::back_inserter(tokens));
-        });
-
-    // Advance `it` to terminator or op with side-effects.
-    it = std::find_if(it, Block::iterator(), [](Operation &op) {
-      return isTerminator(&op) || hasSideEffects(&op);
-    });
-
-    // If `op` implements the AsyncOpInterface, add `token` to the list of async
-    // dependencies.
-    if (auto asyncOp = dyn_cast<gpu::AsyncOpInterface>(*it)) {
-      for (auto token : tokens)
-        asyncOp.addAsyncDependency(token);
-      return;
-    }
-
-    // Otherwise, insert a gpu.wait before 'it'.
-    builder.setInsertionPoint(it->getBlock(), it);
-    auto waitOp = builder.create<gpu::WaitOp>(loc, Type{}, tokens);
-
-    // If the new waitOp is at the end of an async.execute region, add it to the
-    // worklist. 'operator()(executeOp)' would do the same, but this is faster.
-    auto executeOp = dyn_cast<async::ExecuteOp>(it->getParentOp());
-    if (executeOp && areAllUsersExecuteOrAwait(executeOp.token()) &&
-        !it->getNextNode())
-      worklist.push_back(waitOp);
-  }
-
-  SmallVector<gpu::WaitOp, 8> worklist;
-};
-
-// Callback for `async.execute` ops which repeats !gpu.async.token results
-// so that each of them is only used once.
-struct MIOpenAsyncLaunchPass::SingleTokenUseCallback {
-  void operator()(async::ExecuteOp executeOp) {
-    // Extract !gpu.async.token results which have multiple uses.
-    auto multiUseResults =
-        llvm::make_filter_range(executeOp.results(), [](OpResult result) {
-          if (result.use_empty() || result.hasOneUse())
-            return false;
-          auto valueType = result.getType().dyn_cast<async::ValueType>();
-          return valueType &&
-                 valueType.getValueType().isa<gpu::AsyncTokenType>();
-        });
-    if (multiUseResults.empty())
-      return;
-
-    // Indices within !async.execute results (i.e. without the async.token).
-    SmallVector<int, 4> indices;
-    transform(multiUseResults, std::back_inserter(indices),
-              [](OpResult result) {
-                return result.getResultNumber() - 1; // Index without token.
-              });
-
-    for (auto index : indices) {
-      assert(!executeOp.results()[index].getUses().empty());
-      // Repeat async.yield token result, one for each use after the first one.
-      auto uses = llvm::drop_begin(executeOp.results()[index].getUses());
-      auto count = std::distance(uses.begin(), uses.end());
-      auto yieldOp = cast<async::YieldOp>(executeOp.getBody()->getTerminator());
-      SmallVector<Value, 4> operands(count, yieldOp.getOperand(index));
-      executeOp = addExecuteResults(executeOp, operands);
-      // Update 'uses' to refer to the new executeOp.
-      uses = llvm::drop_begin(executeOp.results()[index].getUses());
-      auto results = executeOp.results().take_back(count);
-      for (auto pair : llvm::zip(uses, results))
-        std::get<0>(pair).set(std::get<1>(pair));
-    }
+    if (getOperation()->walk(walker).wasInterrupted())
+      return signalPassFailure();
   }
 };
-
-// Replaces synchronous GPU ops in the op's region with asynchronous ones and
-// inserts the necessary synchronization (as gpu.wait ops). Assumes sequential
-// execution semantics and that no GPU ops are asynchronous yet.
-void MIOpenAsyncLaunchPass::runOnOperation() {
-  if (getOperation()->walk(ThreadTokenCallback(getContext())).wasInterrupted())
-    return signalPassFailure();
-
-  // Collect gpu.wait ops that we can move out of async.execute regions.
-  // getOperation().getRegion().walk(DeferWaitCallback());
-  // Makes each !gpu.async.token returned from async.execute op have single use.
-  // getOperation().getRegion().walk(SingleTokenUseCallback());
-}
+} // namespace
 
 std::unique_ptr<Pass> mlir::miopen::createMIOpenAsyncLaunchPass() {
   return std::make_unique<MIOpenAsyncLaunchPass>();

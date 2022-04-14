@@ -12,10 +12,8 @@
 include "mlir/Pass/PassBase.td"
 
 def AsyncBufferize : Pass<"async-bufferize", "FuncOp"> {
-  let summary = "yadda yahha";
-  let description = [{
-  }];
-
+  let summary = "Convert tensor-type operands for async.launch ops to memref-"
+                "type.";
   let constructor = "mlir::createAsyncBufferizePass()";
   let dependentDialects = ["async::AsyncDialect"];
 }

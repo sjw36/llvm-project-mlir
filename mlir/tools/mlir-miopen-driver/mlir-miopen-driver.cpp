@@ -149,6 +149,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
                            hostPipelineOptions))) {
     return failure();
   }
+  module.getContext()->disableMultithreading();
 
   // Run partitioning pipeline.
   if (hostPipelineSet.contains("partition")) {

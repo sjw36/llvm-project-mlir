@@ -1,4 +1,4 @@
-//===- Bufferize.cpp - Bufferization of linalg ops ------------------===//
+//===- AsyncBufferize.cpp - Bufferization of async.launch ops -------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -28,8 +28,7 @@ using namespace ::mlir::async;
 
 namespace {
 
-/// Generic conversion pattern that matches any LinalgOp. This avoids template
-/// instantiating one pattern for each LinalgOp.
+/// Conversion pattern that converts tensor-type operands to memrefs.
 class BufferizeLaunchOp : public OpConversionPattern<async::LaunchOp> {
 public:
   using OpConversionPattern<async::LaunchOp>::OpConversionPattern;
@@ -37,7 +36,15 @@ public:
   LogicalResult matchAndRewrite(async::LaunchOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rw) const final {
 
-    // 0. Split input operands into dependencies(tokens) and operands(data)
+    return success();
+    
+    // 0. Get callable
+    CallOpInterface callIf(op);
+    auto *callable = callIf.resolveCallable();
+    FuncOp func = dyn_cast<FuncOp>(callable);
+    assert(func);
+
+    // 1. Split input operands into dependencies(tokens) and operands(data)
     SmallVector<Value, 5> deps;
     SmallVector<Value, 5> oprs;
     for (auto operand : adaptor.getOperands()) {
@@ -49,14 +56,8 @@ public:
       }
     }
 
-    // 0. Get callable
-    CallOpInterface callIf(op);
-    auto *callable = callIf.resolveCallable();
-    FuncOp func = dyn_cast<FuncOp>(callable);
-    assert(func);
-
-    // 1. Create new LaunchOp
-    // 1.0. automatically create memref type results from func
+    // 2. Create new LaunchOp
+    // 2.0. automatically create memref type results from func
     auto newCall = rw.create<async::LaunchOp>(op->getLoc(), func, deps, oprs);
     newCall->setAttrs(op->getAttrs());
 
@@ -66,8 +67,8 @@ public:
   }
 };
 
-/// Converts Async operations that work on tensor-type operands or results to
-/// work on buffers.
+/// Converts Async Launch operations that work on tensor-type operands or
+/// results to work on buffers.
 struct AsyncBufferizePass : public AsyncBufferizeBase<AsyncBufferizePass> {
   void runOnOperation() override {
     MLIRContext &context = getContext();

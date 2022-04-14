@@ -22,7 +22,7 @@ def MIOpenApplyImplPass : Pass<"miopen-apply-impl", "ModuleOp"> {
 }
 
 def MIOpenAsyncLaunchPass : Pass<"miopen-async-launch", "FuncOp"> {
-  let summary = "Optimize global tensor allocations";
+  let summary = "convert kernel func call ops to async.launch ops with dependencies";
   let constructor = "mlir::miopen::createMIOpenAsyncLaunchPass()";
   let dependentDialects = ["miopen::MIOpenDialect", "scf::SCFDialect", "linalg::LinalgDialect", "vector::VectorDialect", "memref::MemRefDialect", "async::AsyncDialect"];
 }

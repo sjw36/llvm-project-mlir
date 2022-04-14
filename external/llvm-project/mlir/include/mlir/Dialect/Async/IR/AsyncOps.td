@@ -29,12 +29,13 @@ class Async_Op<string mnemonic, list<Trait> traits = []> :
     Op<AsyncDialect, mnemonic, traits>;
 
 def Async_LaunchOp :
-  Async_Op<"launch", [DeclareOpInterfaceMethods<CallOpInterface>, AttrSizedOperandSegments]> {
-  let summary = "Asynchronous execute operation";
+  Async_Op<"launch", [DeclareOpInterfaceMethods<CallOpInterface>,
+                      AttrSizedOperandSegments]> {
+  let summary = "Asynchronous launch operation";
   let description = [{
-    The `body` region attached to the `async.execute` operation semantically
-    can be executed concurrently with the successor operation. In the followup
-    example "compute0" can be executed concurrently with "compute1".
+    The `async.launch` operation encapsulates a call to a 'kernel' func that
+    may run asynchronously from the caller. A 'async.token' is returned to
+    maintain ordered dependent execution.
 
     The actual concurrency semantics depends on the dialect lowering to the
     executable format. Fully sequential execution ("compute0" completes before
@@ -45,30 +46,24 @@ def Async_LaunchOp :
     state). All dependencies must be made explicit with async execute arguments
     (`async.token` or `async.value`).
 
-   `async.execute` operation takes `async.token` dependencies and `async.value`
-    operands separately, and starts execution of the attached body region only
-    when all tokens and values become ready.
+   `async.launch` operation takes `async.token` dependencies and operands
+    separately, and starts execution of the kernel function only when all
+    tokens and values become ready.
 
     Example:
 
     ```mlir
     %dependency = ... : !async.token
-    %value = ... : !async.value<f32>
 
     %token, %results =
-      async.execute [%dependency](%value as %unwrapped: !async.value<f32>)
-                 -> !async.value<!some.type>
-      {
-        %0 = "compute0"(%unwrapped): (f32) -> !some.type
-        async.yield %0 : !some.type
-      }
+      async.launch @compute0 [%dependency] (%value0, %value1) :
+                 (some.type, some.type) -> some.type
 
     %1 = "compute1"(...) : !some.type
     ```
 
     In the example above asynchronous execution starts only after dependency
-    token and value argument become ready. Unwrapped value passed to the
-    attached body region as an %unwrapped value of f32 type.
+    token and value argument become ready. 
   }];
 
   let arguments = (ins FlatSymbolRefAttr:$callee,
@@ -81,7 +76,6 @@ def Async_LaunchOp :
   let builders = [
     OpBuilder<(ins "FuncOp":$kernelFunc, "ValueRange":$dependencies,
                    "ValueRange":$kernelOperands)>,
-    OpBuilder<(ins "FuncOp":$kernelFunc, "ValueRange":$operands)>,
     OpBuilder<(ins "FlatSymbolRefAttr":$callee, "TypeRange":$results,
       CArg<"ValueRange", "{}">:$operands), [{
       $_state.addOperands(operands);
