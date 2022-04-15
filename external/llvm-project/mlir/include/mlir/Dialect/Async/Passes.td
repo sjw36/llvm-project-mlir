@@ -11,13 +11,6 @@
 
 include "mlir/Pass/PassBase.td"
 
-def AsyncBufferize : Pass<"async-bufferize", "FuncOp"> {
-  let summary = "Convert tensor-type operands for async.launch ops to memref-"
-                "type.";
-  let constructor = "mlir::createAsyncBufferizePass()";
-  let dependentDialects = ["async::AsyncDialect"];
-}
-
 def AsyncParallelFor : Pass<"async-parallel-for", "ModuleOp"> {
   let summary = "Convert scf.parallel operations to multiple async compute ops "
                 "executed concurrently for non-overlapping iteration ranges";

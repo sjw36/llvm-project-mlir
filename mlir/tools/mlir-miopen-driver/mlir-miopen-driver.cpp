@@ -261,11 +261,11 @@ int main(int argc, char **argv) {
   test::registerTestDialect(registry);
 #endif
   MLIRContext context(registry);
-  context.loadDialect<miopen::MIOpenDialect, StandardOpsDialect,
-                      scf::SCFDialect, AffineDialect, memref::MemRefDialect,
-                      math::MathDialect, arith::ArithmeticDialect,
-                      gpu::GPUDialect, bufferization::BufferizationDialect,
-                      async::AsyncDialect>();
+  context
+      .loadDialect<miopen::MIOpenDialect, StandardOpsDialect, scf::SCFDialect,
+                   AffineDialect, memref::MemRefDialect, math::MathDialect,
+                   arith::ArithmeticDialect, gpu::GPUDialect,
+                   bufferization::BufferizationDialect, async::AsyncDialect>();
   mlir::registerAllPasses();
   mlir::registerMIOpenConversionPasses();
   miopen::registerPasses();

@@ -431,25 +431,26 @@ public:
       // candidates list at module level.)
       std::vector<OutliningCandidate> candidates;
       auto callback = [&](Operation *convOp) {
-        if (isa<tosa::Conv2DOp>(convOp) || isa<tosa::DepthwiseConv2DOp>(convOp)) {
+        if (isa<tosa::Conv2DOp>(convOp) ||
+            isa<tosa::DepthwiseConv2DOp>(convOp)) {
           auto strCount =
-          std::string("_outlined_part_") + std::to_string(count++);
+              std::string("_outlined_part_") + std::to_string(count++);
 
-          // Given a Conv2DOp, gather all the element-wise ops that are reachable
-          // from its results, contiguously.
+          // Given a Conv2DOp, gather all the element-wise ops that are
+          // reachable from its results, contiguously.
           //
           // The ops after the Conv2D are "second" ops.
           // inputNodes gathers what will become the parameters of the outlined
-          // function;  initially it's the Conv2D's arguments, and it accumulates
-          // arguments to other ops that don't come from inside the outlined
-          // function.
-          // resultNodes will become the results of the outlined function.  It
-          // starts with Conv2D's result(s) and gains the results of each new
-          // secondOp.  When all a resultNode's users can be determined to lie
-          // within the outlined function, it's removed from the set.
+          // function;  initially it's the Conv2D's arguments, and it
+          // accumulates arguments to other ops that don't come from inside the
+          // outlined function. resultNodes will become the results of the
+          // outlined function.  It starts with Conv2D's result(s) and gains the
+          // results of each new secondOp.  When all a resultNode's users can be
+          // determined to lie within the outlined function, it's removed from
+          // the set.
           //
-          // These are SetVectors because we test with contains() a lot, but still
-          // want to preserve order.
+          // These are SetVectors because we test with contains() a lot, but
+          // still want to preserve order.
           SetVector<Operation *> secondOps;
           SetVector<Value> inputNodes;
           SetVector<Value> resultNodes(convOp->getResults().begin(),
@@ -466,7 +467,8 @@ public:
           }
 
           DominanceInfo domInfo(func);
-          std::deque<Operation *> worklist; // cuz I want to pull from the front.
+          std::deque<Operation *>
+              worklist; // cuz I want to pull from the front.
 
           worklist.push_back(convOp);
           while (!worklist.empty()) {
@@ -477,10 +479,10 @@ public:
                 bool skip = false;
                 // First criterion is that the op is element-wise.  Second
                 // criterion is that the op dominates all the users of the
-                // accumulated results of the outlined function.  In other words,
-                // we can't take an op that comes "after" a user of the result
-                // from the eventual call, because the call needs to dominate all
-                // its users.
+                // accumulated results of the outlined function.  In other
+                // words, we can't take an op that comes "after" a user of the
+                // result from the eventual call, because the call needs to
+                // dominate all its users.
                 for (const Value &val : resultNodes) {
                   for (auto *user : val.getDefiningOp()->getUsers()) {
                     if (user != userOp &&
@@ -517,7 +519,6 @@ public:
                 }
               }
             }
-          
           }
 
           if (!secondOps.empty() || !frontOps.empty()) {

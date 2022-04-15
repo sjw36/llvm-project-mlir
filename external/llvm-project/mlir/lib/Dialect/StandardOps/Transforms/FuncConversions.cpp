@@ -15,14 +15,13 @@ using namespace mlir;
 namespace {
 /// Converts the operand and result types of the Standard's CallOp, used
 /// together with the FuncOpSignatureConversion.
-struct CallOpSignatureConversion : public OpInterfaceConversionPattern<CallOpInterface> {
-  using OpInterfaceConversionPattern<CallOpInterface>::OpInterfaceConversionPattern;
+struct CallOpSignatureConversion
+    : public OpInterfaceConversionPattern<CallOpInterface> {
+  using OpInterfaceConversionPattern<
+      CallOpInterface>::OpInterfaceConversionPattern;
 
   /// Attempt to match against code rooted at the specified operation,
   /// which is the same operation code as getRootKind().
-  //virtual LogicalResult match(Operation *op) const;
-
-  /// Hook for derived classes to implement combined matching and rewriting.
   LogicalResult
   matchAndRewrite(CallOpInterface op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const final {
@@ -35,7 +34,8 @@ struct CallOpSignatureConversion : public OpInterfaceConversionPattern<CallOpInt
 
       // Substitute with the new result types from the corresponding FuncType
       // conversion.
-      auto *newOp = op.clone(rewriter, op->getLoc(), convertedResults, operands);
+      auto *newOp =
+          op.clone(rewriter, op->getLoc(), convertedResults, operands);
 
       rewriter.replaceOp(op, newOp->getResults());
     }

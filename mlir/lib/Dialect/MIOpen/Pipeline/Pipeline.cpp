@@ -68,14 +68,12 @@ void miopen::addHighLevelPipeline(PassManager &pm, bool toMIOpen) {
 
   // bufferization
   /* miopen-opt --arith-bufferize --linalg-bufferize --tensor-bufferize
-        --func-bufferize --async-bufferize --finalizing-bufferize
-        --buffer-results-to-out-params
+        --func-bufferize --finalizing-bufferize --buffer-results-to-out-params
    */
   pm.addPass(arith::createArithmeticBufferizePass());
   pm.addNestedPass<FuncOp>(createLinalgBufferizePass());
   pm.addNestedPass<FuncOp>(createTensorBufferizePass());
   pm.addPass(createFuncBufferizePass());
-  pm.addNestedPass<FuncOp>(createAsyncBufferizePass());
   pm.addNestedPass<FuncOp>(bufferization::createFinalizingBufferizePass());
   pm.addPass(bufferization::createBufferResultsToOutParamsPass());
 

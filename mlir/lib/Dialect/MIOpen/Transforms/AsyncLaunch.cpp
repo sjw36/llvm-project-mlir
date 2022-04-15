@@ -78,7 +78,7 @@ class MIOpenAsyncLaunchPass
   // Replaces asyncOp with a clone that returns a token.
   LogicalResult rewriteCallOp(CallOp op, FuncOp func) {
     OpBuilder builder(op);
-    //builder.setInsertionPoint(op);
+    // builder.setInsertionPoint(op);
     // Find tokens related to inputs
     SmallVector<Value, 4> tokens;
     for (auto operand : op.getOperands()) {
@@ -92,8 +92,8 @@ class MIOpenAsyncLaunchPass
     }
 
     // Clone the op to return a token in addition to the other results.
-    auto alaunch = builder.create<async::LaunchOp>(
-        op.getLoc(), func, tokens, op->getOperands());
+    auto alaunch = builder.create<async::LaunchOp>(op.getLoc(), func, tokens,
+                                                   op->getOperands());
 
     // Replace the op with the async clone.
     auto results = alaunch->getResults();
@@ -103,7 +103,7 @@ class MIOpenAsyncLaunchPass
     // associate all results with the result token
     for (auto res : results)
       res2tokens.insert({res, token});
-    
+
     currentTokens.insert(token);
 
     op->replaceAllUsesWith(results);

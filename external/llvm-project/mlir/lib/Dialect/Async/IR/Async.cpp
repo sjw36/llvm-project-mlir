@@ -202,7 +202,8 @@ LogicalResult LaunchOp::verify() {
     if (type0 != type1) {
       auto type0Shape = type0.dyn_cast_or_null<ShapedType>();
       auto type1Shape = type1.dyn_cast_or_null<ShapedType>();
-      if (!type0Shape || !type1Shape || type0Shape.getShape() != type1Shape.getShape() ||
+      if (!type0Shape || !type1Shape ||
+          type0Shape.getShape() != type1Shape.getShape() ||
           type0Shape.getElementType() != type1Shape.getElementType())
         return false;
     }
@@ -224,7 +225,7 @@ LogicalResult LaunchOp::verify() {
   // Match operand types
   if (funcType.getNumInputs() != operands().size())
     return emitOpError("incorrect number of operands for callee");
-  
+
   for (auto tuple : llvm::zip(operands(), funcType.getInputs())) {
     if (!compareTypes(std::get<0>(tuple).getType(), std::get<1>(tuple)))
       return emitOpError("requires matching operand types");
