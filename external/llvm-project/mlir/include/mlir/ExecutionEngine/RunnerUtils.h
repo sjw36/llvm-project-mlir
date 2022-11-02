@@ -96,13 +96,35 @@ struct VectorDataPrinter {
   static void print(std::ostream &os, const Vector<T, M, Dims...> &val);
 };
 
+template <bool isPOD, typename T>
+void _testNAN(T &v) {
+}
+#ifdef MLIR_ENABLE_NAN_ASSERT
+template<>
+void _testNAN<true,float>(float &v) {
+  assert(!std::isnan(v));
+}
+template<>
+void _testNAN<true,const float>(const float &v) {
+  assert(!std::isnan(v));
+}
+#endif // MLIR_ENABLE_NAN_ASSERT
+
+template <typename T>
+static void testNAN(T &v) {
+  _testNAN<std::is_floating_point<T>::value>(v);
+}
+
+
 template <typename T, int M, int... Dims>
 void VectorDataPrinter<T, M, Dims...>::print(std::ostream &os,
                                              const Vector<T, M, Dims...> &val) {
   static_assert(M > 0, "0 dimensioned tensor");
   static_assert(sizeof(val) == M * StaticSizeMult<Dims...>::value * sizeof(T),
                 "Incorrect vector size!");
+  os << "************************************\n";
   // First
+  testNAN(val[0]);
   os << "(" << val[0];
   if (M > 1)
     os << ", ";
@@ -111,6 +133,7 @@ void VectorDataPrinter<T, M, Dims...>::print(std::ostream &os,
   // Kernel
   for (unsigned i = 1; i + 1 < M; ++i) {
     printSpace(os, 2 * sizeof...(Dims));
+    testNAN(val[i]);
     os << val[i] << ", ";
     if (sizeof...(Dims) > 1)
       os << "\n";
@@ -118,6 +141,7 @@ void VectorDataPrinter<T, M, Dims...>::print(std::ostream &os,
   // Last
   if (M > 1) {
     printSpace(os, sizeof...(Dims));
+    testNAN(val[M - 1]);
     os << val[M - 1];
   }
   os << ")";
@@ -164,6 +188,7 @@ void MemRefDataPrinter<T>::print(std::ostream &os, T *base, int64_t dim,
                                  int64_t rank, int64_t offset,
                                  const int64_t *sizes, const int64_t *strides) {
   if (dim == 0) {
+    testNAN(base[offset]);
     os << base[offset];
     return;
   }
