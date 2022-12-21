@@ -593,11 +593,13 @@ void TosaPartitionPass::runOnOperation() {
             // while also being acceptable leading ops.  Let's prefer the
             // latter by insisting that a trailing TransposeOp directly uses
             // an anchor op.
+#if 0
             if (isa<tosa::TransposeOp>(userOp)) {
               auto *firstOp = userOp->getOpOperand(0).get().getDefiningOp();
               if (!firstOp || !isAnchorOp(firstOp))
                 skip = true;
             }
+#endif
 
             // userOp is acceptable.  Keep it as a trailingOp, put it on the
             // worklist.  Add its operands to inputNodes unless they come
