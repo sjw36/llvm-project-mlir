@@ -351,28 +351,8 @@ struct TransposeRewritePattern : public OpRewritePattern<tosa::TransposeOp> {
 struct ReshapeRewritePattern : public OpRewritePattern<tosa::ReshapeOp> {
   using OpRewritePattern<tosa::ReshapeOp>::OpRewritePattern;
 
-  static void expandTensor(PatternRewriter &b, tosa::ReshapeOp rop,
-                           ArrayRef<int64_t> inpShape, ArrayRef<int64_t> outShape,
-                           bool collapse = false) {
-    // %3 = "tosa.reshape"(%2) {new_shape = [1, 12, 12, 32]} : (tensor<1x12x384xf32>) -> tensor<1x12x12x32xf32>
-    //    - inpShape = [1, 12, 384]
-    //    - outShape = [1, 12, 12, 32]
-    // %3 = rock.transform %2 by <affine_map<(d0, d1, d2) -> (d0, d1, d2 floordiv 32, d2 mod 32)> by [
-    //        <PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>,
-    //        <PassThrough ["dim1"] at [1] -> ["dim1"] at [1]>,
-    //        <Merge{12, 32} ["dim2"] at [2] -> ["m2", "m3"] at [2, 3]>
-    //      ] bounds = [1, 12, 384] -> [1, 12, 12, 32]> : tensor<1x12x384xf32> to tensor<1x12x384xf32>
-
-    // %3 = rock.transform %2 by <affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)> by [
-    //          <PassThrough ["dim0"] at [0] -> ["dim0"] at [0]>,
-    //          <PassThrough ["dim1"] at [1] -> ["dim1"] at [1]>,
-    //          <PassThrough ["dim2"] at [2] -> ["dim2"] at [2]>
-    //      ] bounds = [1, 12, 12, 32] -> [1, 12, 12]> : tensor<1x12x384xf32> to tensor<1x12x12x32xf32>
-    
-    // %5 = "tosa.reshape"(%4) {new_shape = [1, 12, 12, 32]} : (tensor<1x12x12x32xf32>) -> tensor<12x12x32xf32>
-    //    - inpShape = [12, 12, 32]
-    //    - outShape = [1, 12, 12, 32]
-    SmallVector<SmallVector<uint32_t>> merges;
+  static void collectMerges(ArrayRef<int64_t> inpShape, ArrayRef<int64_t> outShape,
+                            SmallVector<SmallVector<uint32_t>> &merges) {
     SmallVector<uint32_t> mergeDims;
     uint32_t inpIdx = 0;
     int64_t inpCur = inpShape[0];
@@ -389,33 +369,64 @@ struct ReshapeRewritePattern : public OpRewritePattern<tosa::ReshapeOp> {
         mergeDims.clear();
       }
     }
-    if (mergeDims.size())
-      merges.back().append(mergeDims);
+    assert(mergeDims.empty());
+  }
+  static void expandTensor(PatternRewriter &b, tosa::ReshapeOp rop,
+                           ArrayRef<int64_t> inpShape, ArrayRef<int64_t> outShape) {
+    // %3 = "tosa.reshape"(%2) {new_shape = [1, 12, 12, 32]} : (tensor<1x12x384xf32>) -> tensor<1x12x12x32xf32>
+    //    - inpShape = [1, 12, 384]
+    //    - outShape = [1, 12, 12, 32]
+    SmallVector<SmallVector<uint32_t>> merges;
+    collectMerges(inpShape, outShape, merges);
 
-    // inpShape == upper?
-    rock::TopDownTMBuilder transform(b, inpShape, rop.getLoc());
+    rock::BottomUpTMBuilder transform(b, inpShape, rop.getLoc());
     for (auto idxAndMerge : llvm::enumerate(merges)) {
       uint32_t idx = idxAndMerge.index();
-      auto merge = idxAndMerge.value();
-      if (merge.size() == 1) {
-        transform.passThrough({merge[0]}, {idx});
+      auto mergeDims = idxAndMerge.value();
+      if (mergeDims.size() == 1) {
+        transform.passThrough({mergeDims[0]}, {idx});
       } else {
         SmallVector<SmallString<8>> mergeNames;
         SmallVector<int64_t> mergeSizes;
         SmallVector<StringRef> mergeNameRefs;
-        for (auto midx : merge) {
-          SmallString<8> mname(Twine((collapse ? "dim" : "m") + Twine(midx)).str());
+        for (auto midx : mergeDims) {
+          SmallString<8> mname(Twine("exp" + Twine(midx)).str());
           mergeNames.push_back(mname);
           mergeNameRefs.push_back(mergeNames.back());
           mergeSizes.push_back(outShape[midx]);
         }
-        if (collapse) {
-          transform.unmerge(transform.startName(idx), idx,
-                            mergeNameRefs, mergeSizes);
-        } else {
-          transform.merge(mergeNameRefs, merge,
-                          transform.startName(idx), mergeSizes);
+        transform.unmerge(mergeNameRefs, mergeDims, transform.startName(idx), mergeSizes);
+      }
+    }
+
+    b.replaceOpWithNewOp<rock::TransformOp>(rop, rop.getOperand(), transform.get());
+  }
+
+  static void collapseTensor(PatternRewriter &b, tosa::ReshapeOp rop,
+                             ArrayRef<int64_t> inpShape, ArrayRef<int64_t> outShape) {
+    // %5 = "tosa.reshape"(%4) {new_shape = [1, 12, 12, 32]} : (tensor<1x12x12x32xf32>) -> tensor<12x12x32xf32>
+    //    - inpShape = [1, 12, 12, 32]
+    //    - outShape = [12, 12, 32]
+    SmallVector<SmallVector<uint32_t>> merges;
+    collectMerges(outShape, inpShape, merges);
+
+    rock::TopDownTMBuilder transform(b, outShape, rop.getLoc());
+    for (auto idxAndMerge : llvm::enumerate(merges)) {
+      uint32_t idx = idxAndMerge.index();
+      auto mergeDims = idxAndMerge.value();
+      if (mergeDims.size() == 1) {
+        transform.passThrough({mergeDims[0]}, {idx});
+      } else {
+        SmallVector<SmallString<8>> mergeNames;
+        SmallVector<int64_t> mergeSizes;
+        SmallVector<StringRef> mergeNameRefs;
+        for (auto midx : mergeDims) {
+          SmallString<8> mname(Twine("m" + Twine(midx)).str());
+          mergeNames.push_back(mname);
+          mergeNameRefs.push_back(mergeNames.back());
+          mergeSizes.push_back(inpShape[midx]);
         }
+        transform.merge(mergeNameRefs, mergeDims, transform.startName(idx), mergeSizes);
       }
     }
 
@@ -440,10 +451,10 @@ struct ReshapeRewritePattern : public OpRewritePattern<tosa::ReshapeOp> {
 
     if (outShape.size() > inpShape.size()) {
       // Expand
-      expandTensor(b, rop, outShape, inpShape, true);
+      expandTensor(b, rop, inpShape, outShape);
     } else if (outShape.size() < inpShape.size()) {
       // Collapse
-      //expandTensor(b, rop, outShape, inpShape, true);
+      collapseTensor(b, rop, inpShape, outShape);
     }
     return success();
   }

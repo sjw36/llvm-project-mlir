@@ -809,3 +809,59 @@ Value mlir::rock::insertTransposeAndBroadcastTransforms(
   }
   return inp;
 }
+
+TransformMapAttr mlir::rock::invertTransformMap(
+              OpBuilder &b, mlir::rock::TransformMapAttr transformMap) {
+
+    auto lowShape = transformMap.getLowerBounds();
+    auto uppShape = transformMap.getUpperBounds();
+
+    rock::TopDownTMBuilder transform(b, lowShape, b.getUnknownLoc());
+    for (auto tattr : transformMap.getOps()) {
+      switch (tattr.getType()) {
+      case rock::TransformType::PassThrough:
+        transform.passThrough(tattr.getUpperDims(), tattr.getLowerDims());
+        break;
+      case rock::TransformType::Pad:
+      case rock::TransformType::Slice:
+      case rock::TransformType::Embed:
+      case rock::TransformType::AddDim:
+      case rock::TransformType::Broadcast: // Unsupported
+        return rock::TransformMapAttr();
+      
+      case rock::TransformType::Unmerge: {
+        auto lowDims = tattr.getLowerDims();
+        assert(lowDims.size() == 1);
+        SmallVector<SmallString<8>> mergeNames;
+        SmallVector<int64_t> mergeSizes;
+        SmallVector<StringRef> mergeNameRefs;
+        for (auto midx : tattr.getUpperDims()) {
+          SmallString<8> mname(Twine("m" + Twine(midx)).str());
+          mergeNames.push_back(mname);
+          mergeNameRefs.push_back(mergeNames.back());
+          mergeSizes.push_back(uppShape[midx]);
+        }
+        transform.merge(mergeNameRefs, tattr.getUpperDims(), transform.startName(lowDims[0]), mergeSizes);
+        break;
+      }
+      case rock::TransformType::Merge:
+      case rock::TransformType::Unfold: {
+        auto uppDims = tattr.getUpperDims();
+        assert(uppDims.size() == 1);
+        SmallVector<SmallString<8>> mergeNames;
+        SmallVector<int64_t> mergeSizes;
+        SmallVector<StringRef> mergeNameRefs;
+        for (auto midx : tattr.getLowerDims()) {
+          SmallString<8> mname(Twine("dim" + Twine(midx)).str());
+          mergeNames.push_back(mname);
+          mergeNameRefs.push_back(mergeNames.back());
+          mergeSizes.push_back(lowShape[midx]);
+        }
+        transform.unmerge(transform.startName(uppDims[0]), uppDims[0], mergeNameRefs, mergeSizes);
+        break;
+      }
+      }
+    }
+
+    return transform.get();
+}

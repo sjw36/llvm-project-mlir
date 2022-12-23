@@ -157,7 +157,7 @@ def Rock_TransformAttr : Rock_Attr<"Transform"> {
     let hasCustomAssemblyFormat = 1;
 }
 
-/// TransformsAttr
+/// TransformMapAttr
 def Rock_TransformMapAttr : Rock_Attr<"TransformMap"> {
     let mnemonic = "transform_map";
     let description = [{
