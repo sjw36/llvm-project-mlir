@@ -258,6 +258,13 @@ static Value reconfigureLAGeneric(PatternRewriter &b,
   return laOut;
 }
 
+static void moveOutputViews(Value val, Operation *op) {
+  if (auto vop = val.getDefiningOp<rock::TransformOp>()) {
+    vop->moveBefore(op);
+    moveOutputViews(vop.getOperand(), vop);
+  }
+}
+
 static LogicalResult findGlobalStore(linalg::GenericOp laGeneric,
                                      Value &inputLeadingToGlobalStore,
                                      GlobalStoreOp &gemmStoreOp) {
@@ -353,6 +360,7 @@ LogicalResult MILARewritePattern::matchAndRewrite(linalg::GenericOp laGeneric,
     return failure();
   }
   auto actualLAGenericOut = laGeneric.getOutputOperand(0);
+  Value output = actualLAGenericOut->get();
   auto actualLAGenericOutIdxMap =
       laGeneric.getTiedIndexingMap(actualLAGenericOut);
   auto invertOutIdxMap = inversePermutation(actualLAGenericOutIdxMap);
@@ -413,6 +421,11 @@ LogicalResult MILARewritePattern::matchAndRewrite(linalg::GenericOp laGeneric,
     Value laOutRegs =
         reconfigureLAGeneric(b, laGeneric, fusionSlice, idxMaps, gemmStoreOp);
     // 2.2.0. Move the generic before the write-back. This'll put all
+    // the copy loops for other inputs before the generic due to insertion
+    // order.
+    moveOutputViews(output, gemmStoreOp);
+
+    // 2.2.1. Move the generic before the write-back. This'll put all
     // the copy loops for other inputs before the generic due to insertion
     // order.
     laGeneric->moveBefore(gemmStoreOp);
