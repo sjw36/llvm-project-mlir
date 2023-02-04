@@ -151,6 +151,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     pm.addNestedPass<func::FuncOp>(rock::createRockSugarToLoopsPass());
     pm.addNestedPass<func::FuncOp>(rock::createRockCleanMathPass());
     pm.addNestedPass<func::FuncOp>(rock::createRockBufferLoadMergePass());
+    pm.addNestedPass<func::FuncOp>(rock::createRockTransformToMemrefPass());
     pm.addNestedPass<func::FuncOp>(rock::createRockLoopsToCfPass());
     pm.addPass(createConvertRockToGPUPass());
 

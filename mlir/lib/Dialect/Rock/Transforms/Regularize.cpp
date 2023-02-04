@@ -46,9 +46,9 @@ using namespace mlir::rock;
 
 namespace {
 
-// This rewrite will rewrite the linalg IO that has view like-ops surrounding
-// them to be consumed by the linalg operation itself adjusting the indexing
-// maps to faithfully represent them.
+////////////////////////////////////////////////////////////////////////
+////  Convert memref.collapse/expand_shape ops to rock.transform
+////////////////////////////////////////////////////////////////////////
 struct CollapseRewritePattern
     : public OpRewritePattern<memref::CollapseShapeOp> {
   using OpRewritePattern<memref::CollapseShapeOp>::OpRewritePattern;
@@ -143,185 +143,17 @@ struct RegularizeGenericRewritePattern
     }
 
     // reset idxmaps
-    SmallVector<AffineMap, 5> newIdxMaps(idxMaps.size(), outIdxMap);
-    lgop.indexing_mapsAttr(rw.getAffineMapArrayAttr(newIdxMaps));
+    rw.updateRootInPlace(lgop, [&]() {
+      SmallVector<AffineMap, 5> newIdxMaps(idxMaps.size(), outIdxMap);
+      lgop.indexing_mapsAttr(rw.getAffineMapArrayAttr(newIdxMaps));
+    });
 
     return lres;
   }
 };
 
 ////////////////////////////////////////////////////////////////////////
-////  Push Transforms Up To GEMM output
-////////////////////////////////////////////////////////////////////////
-#if 0
-struct PushTransformsUpRewritePattern
-    : public OpRewritePattern<memref::AllocOp> {
-  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
-
-  /////////////////////////////////////////////////////////////////////
-  static bool collectChain(Value result, Operation *forwOp,
-                           SmallVector<Operation *> &chain) {
-    while (auto top = dyn_cast<rock::TransformOp>(forwOp)) {
-      result = top.getResult();
-      if (!result.hasOneUse()) {
-        return false; // TODO: fix when encountered
-        // return failure(); // currently restricted to 1 reader
-      }
-      chain.push_back(forwOp);
-      forwOp = (*result.getUses().begin()).getOwner();
-    }
-    chain.push_back(forwOp);
-    if (auto lgop = dyn_cast<linalg::GenericOp>(forwOp)) {
-      return llvm::is_contained(lgop.getOutputs(), result);
-    } else if (auto mcop = dyn_cast<memref::CopyOp>(forwOp)) {
-      // should never be output of memcpy?
-      assert(mcop.getTarget() != result);
-      return mcop.getTarget() == result;
-    } else if (auto rgop = dyn_cast<rock::GridwiseGemmOp>(forwOp)) {
-      return rgop.getC() == result;
-    } else if (auto rgop = dyn_cast<rock::GridwiseGemmV2Op>(forwOp)) {
-      return rgop.getC() == result;
-    }
-    assert(0); // unknown op
-    return false;
-  }
-
-  static LogicalResult updateWriter(PatternRewriter &rw,
-                                    ArrayRef<Operation *> writer,
-                                    ArrayRef<TransformMapAttr> transforms,
-                                    Value nbuffer) {
-    Operation *op = writer.back();
-    if (auto lgop = dyn_cast<linalg::GenericOp>(op)) {
-      // 1 output
-      Value out = lgop.getOutputs()[0];
-      auto outType = out.getType().cast<ShapedType>();
-
-      // all index maps must be identity
-      auto idxMaps = lgop.getIndexingMapsArray();
-      auto outIdxMap = idxMaps.back();
-      Location loc = lgop.getLoc();
-
-      PatternRewriter::InsertionGuard guard(rw);
-      rw.setInsertionPoint(lgop);
-      // apply transforms to inputs
-      SmallVector<Value> inps(lgop.getInputs());
-      for (auto inp : inps) {
-        Value val = inp;
-        for (auto writeOp : llvm::reverse(writer)) {
-          if (auto top = dyn_cast<rock::TransformOp>(writeOp)) {
-            auto tx = rock::invertTransformMap(rw, top.getTransform());
-            if (!tx)
-              return lgop.emitError("Non-invertible transform");
-            auto ntop = rw.create<rock::TransformOp>(loc, val, tx);
-            val = ntop.getResult();
-          }
-        }
-        for (auto tx : transforms) {
-          auto top = rw.create<rock::TransformOp>(loc, val, tx);
-          val = top.getResult();
-        }
-        lgop->replaceUsesOfWith(inp, val);
-      }
-      // update the output with the new buffer
-      lgop->replaceUsesOfWith(out, nbuffer);
-
-      // update index maps
-      int64_t nrank = nbuffer.getType().cast<ShapedType>().getRank();
-      SmallVector<AffineMap, 5> nIdxMaps;
-      for (auto idxMap : idxMaps)
-        nIdxMaps.push_back(
-            AffineMap::getMultiDimIdentityMap(nrank, rw.getContext()));
-      lgop.indexing_mapsAttr(rw.getAffineMapArrayAttr(nIdxMaps));
-
-      // update parallel
-      SmallVector<StringAttr, 5> nIterators(nrank,
-                                            rw.getStringAttr("parallel"));
-      lgop.iterator_typesAttr(rw.getArrayAttr(
-          ArrayRef<Attribute>(nIterators.begin(), nIterators.end())));
-
-      return success();
-    } else if (isa<rock::GridwiseGemmOp, rock::GridwiseGemmV2Op>(op)) {
-      // apply to gemm output buffer
-      Location loc = op->getLoc();
-      Value val = nbuffer;
-      for (auto tx : llvm::reverse(transforms)) {
-        auto itx = rock::invertTransformMap(rw, tx);
-        if (!itx) {
-          assert(0);
-          return failure();
-        }
-        auto top = rw.create<rock::TransformOp>(loc, val, itx);
-        val = top.getResult();
-      }
-      if (writer.size() > 1) {
-        // has transforms, replace head with new transforms
-        auto top = dyn_cast<rock::TransformOp>(writer[0]);
-        top->replaceUsesOfWith(top.getOperand(), val);
-      } else {
-        // replace gemm result with new transforms
-        op->replaceUsesOfWith(op->getOperand(2), val);
-      }
-      return success();
-    }
-    return failure();
-  }
-
-  LogicalResult matchAndRewrite(memref::AllocOp alloc,
-                                PatternRewriter &rw) const override {
-    LogicalResult lres = failure();
-    Value buffer = alloc.getResult();
-
-    // find writer and readers (must be a transform)
-    bool hasTransforms = false;
-    SmallVector<Operation *> writer;
-    SmallVector<SmallVector<Operation *>> readers;
-    for (auto &use : buffer.getUses()) {
-      Operation *useOp = use.getOwner();
-      SmallVector<Operation *> chain;
-      bool isWriter = collectChain(buffer, useOp, chain);
-      hasTransforms |= chain.size() > 1;
-      if (isWriter) {
-        assert(writer.empty());
-        writer = chain;
-      } else {
-        readers.push_back(chain);
-      }
-    }
-    if (hasTransforms) {
-      for (auto reader : readers) {
-        Operation *readOp = nullptr;
-        Value readInp = buffer;
-        SmallVector<TransformMapAttr> readTransforms;
-        for (auto op : reader) {
-          if (auto top = dyn_cast<rock::TransformOp>(op)) {
-            readTransforms.push_back(top.getTransform());
-            readInp = top.getResult();
-          } else {
-            readOp = op;
-          }
-        }
-        if (readOp && readTransforms.size()) {
-          // create new buffer (substitue in reader and writer)
-          PatternRewriter::InsertionGuard guard(rw);
-          rw.setInsertionPoint(alloc);
-          Value nbuffer =
-              rw.create<memref::AllocOp>(alloc.getLoc(),
-                                         readInp.getType().cast<MemRefType>())
-                  .getResult();
-          // update writer inputs if possible
-          if (succeeded(updateWriter(rw, writer, readTransforms, nbuffer))) {
-            readOp->replaceUsesOfWith(readInp, nbuffer);
-            lres = success();
-          }
-        }
-      }
-    }
-    return lres;
-  }
-};
-#else
-////////////////////////////////////////////////////////////////////////
-////  Push Transforms Up To GEMM output
+////  Push Transforms Over alloc to writer
 ////////////////////////////////////////////////////////////////////////
 struct PushTransformsUpRewritePattern
     : public OpRewritePattern<memref::AllocOp> {
@@ -417,7 +249,7 @@ struct PushTransformsUpRewritePattern
     return lres;
   }
 };
-#endif
+
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -430,13 +262,13 @@ struct RockRegularizePass
 void RockRegularizePass::runOnOperation() {
   MLIRContext *ctx = &getContext();
   auto func = getOperation();
-  if (!func->getAttrOfType<UnitAttr>("kernel")) {
-    // disable for non-kernels (and all multi kernels)
+  if (!func->hasAttr("kernel")) {
+    // disable for non-kernels
     return;
   }
 
   {
-#if 0
+#if 1
     ConversionTarget target(*ctx);
     target.addLegalDialect<arith::ArithmeticDialect, rock::RockDialect,
                            memref::MemRefDialect, linalg::LinalgDialect>();
@@ -476,7 +308,6 @@ void RockRegularizePass::runOnOperation() {
     if (failed(applyPartialConversion(func, target,
                                       std::move(patterns)))) {
       signalPassFailure();
-      return;
     }
 #else
     RewritePatternSet patterns(ctx);

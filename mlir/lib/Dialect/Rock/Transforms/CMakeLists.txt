@@ -12,6 +12,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   GridwiseGemmToBlockwise.cpp
   LoopsToCf.cpp
   ThreadwiseGemmLowering.cpp
+  TransformToMemref.cpp
   LowerRockReduce.cpp
 
   ADDITIONAL_HEADER_DIRS

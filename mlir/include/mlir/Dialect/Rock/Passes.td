@@ -77,6 +77,11 @@ def RockBufferLoadMergePass : Pass<"rock-buffer-load-merge", "::mlir::func::Func
   let dependentDialects = ["::mlir::amdgpu::AMDGPUDialect"];
 }
 
+def RockTransformToMemrefPass : Pass<"rock-transform-to-memref", "::mlir::func::FuncOp"> {
+  let summary = "convert remaining rock.transform ops to memref.expand/collapse_shape";
+  let dependentDialects = ["rock::RockDialect", "AffineDialect", "gpu::GPUDialect", "vector::VectorDialect", "memref::MemRefDialect"];
+}
+
 def RockLoopsToCfPass : Pass<"rock-loops-to-cf", "ModuleOp"> {
   let summary = "expand loop / affine dialects to control flow. Notice GPU dialect will explicitly NOT be used in this pass";
 }
