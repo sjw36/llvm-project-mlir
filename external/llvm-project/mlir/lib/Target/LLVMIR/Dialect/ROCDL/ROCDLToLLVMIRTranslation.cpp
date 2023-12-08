@@ -49,15 +49,18 @@ static llvm::Value *createIntrinsicCallWithRange(llvm::IRBuilderBase &builder,
 static llvm::Value *createDeviceFunctionCall(llvm::IRBuilderBase &builder,
                                              StringRef fnName, int parameter) {
   llvm::Module *module = builder.GetInsertBlock()->getModule();
+  llvm::Type *i32Ty = llvm::Type::getInt32Ty(module->getContext());
   llvm::FunctionType *functionType = llvm::FunctionType::get(
       llvm::Type::getInt64Ty(module->getContext()), // return type.
-      llvm::Type::getInt32Ty(module->getContext()), // parameter type.
+      i32Ty, // parameter type.
       false);                                       // no variadic arguments.
   llvm::Function *fn = dyn_cast<llvm::Function>(
       module->getOrInsertFunction(fnName, functionType).getCallee());
   llvm::Value *fnOp0 = llvm::ConstantInt::get(
       llvm::Type::getInt32Ty(module->getContext()), parameter);
-  return builder.CreateCall(fn, ArrayRef<llvm::Value *>(fnOp0));
+  llvm::Value *callVal = builder.CreateCall(fn, ArrayRef<llvm::Value *>(fnOp0));
+  llvm::Value *retVal = builder.CreateTrunc(callVal, i32Ty);
+  return retVal;
 }
 
 namespace {

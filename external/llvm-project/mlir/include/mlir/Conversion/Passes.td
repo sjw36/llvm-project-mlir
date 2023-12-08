@@ -471,6 +471,7 @@ def ConvertGpuOpsToROCDLOps : Pass<"convert-gpu-to-rocdl", "gpu::GPUModuleOp"> {
   let dependentDialects = [
     "ROCDL::ROCDLDialect",
     "cf::ControlFlowDialect",
+    "index::IndexDialect",
     "memref::MemRefDialect",
   ];
   let options = [
