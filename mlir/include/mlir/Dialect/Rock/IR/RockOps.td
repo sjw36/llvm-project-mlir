@@ -1366,7 +1366,6 @@ def Rock_ThreadwiseCopyOp :
   let hasVerifier = 1;
 }
 
-
 def Rock_StageOp :
   Rock_Op<"stage">,
   Arguments<(ins DefaultValuedStrAttr<StrAttr, "stage">:$name)>
@@ -1380,5 +1379,30 @@ def Rock_StageOp :
     let regions = (region AnyRegion:$region);
     let hasCustomAssemblyFormat = 1;
   }
+
+def Rock_GlobalSyncOp : Rock_Op<"global_sync"> {
+
+  let summary = "Global synchronization (like barrier) for a specific buffer";
+
+  let description = [{
+    `rock.global_sync` synchronizes all threads in a kernel launch.
+    - Allows optimization unrelated to `buffer`.
+
+    pseudo-code
+    // reset barrier or use another
+    > if (thread == 0)
+    >   counter = 0;   // only thread zero
+    > if (wg_thread == 0)
+    >   while (counter != 0); // spin loop for every wg
+    > barrier // wait all for zero
+    > if (wg_thread == 0) {
+    >   atomic_inc(counter); // each wg incrments
+    >   while (counter != num_blocks); // spin loop for every wg
+    > }
+    > barrier // wait all for num_blocks
+  }];
+
+  let assemblyFormat = "attr-dict";
+}
 
 #endif // ROCK_OPS

@@ -112,6 +112,11 @@ def RockLowerReducePass : Pass<"rock-lower-reduce", "::mlir::func::FuncOp"> {
   let dependentDialects = ["rock::RockDialect", "func::FuncDialect", "gpu::GPUDialect"];
 }
 
+def RockLowerGlobalSyncPass : Pass<"rock-lower-global-sync", "::mlir::func::FuncOp"> {
+  let summary = "Lower rock.global_sync operator";
+  let dependentDialects = ["rock::RockDialect", "func::FuncDialect", "gpu::GPUDialect"];
+}
+
 def RockPrepareLLVMPass : Pass<"rock-prepare-llvm", "::mlir::LLVM::LLVMFuncOp"> {
   let summary = "prepare the generated code for llvm";
   let dependentDialects = ["ROCDL::ROCDLDialect"];

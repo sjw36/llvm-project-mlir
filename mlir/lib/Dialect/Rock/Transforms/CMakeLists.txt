@@ -21,6 +21,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   TransformToMemref.cpp
   ViewToTransform.cpp
   LowerRockReduce.cpp
+  LowerRockGlobalSync.cpp
   RockPrepareLLVM.cpp
 
   ADDITIONAL_HEADER_DIRS
