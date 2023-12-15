@@ -52,7 +52,7 @@ static llvm::Value *createDeviceFunctionCall(llvm::IRBuilderBase &builder,
   llvm::Type *i32Ty = llvm::Type::getInt32Ty(module->getContext());
   llvm::FunctionType *functionType = llvm::FunctionType::get(
       llvm::Type::getInt64Ty(module->getContext()), // return type.
-      i32Ty, // parameter type.
+      i32Ty,                                        // parameter type.
       false);                                       // no variadic arguments.
   llvm::Function *fn = dyn_cast<llvm::Function>(
       module->getOrInsertFunction(fnName, functionType).getCallee());

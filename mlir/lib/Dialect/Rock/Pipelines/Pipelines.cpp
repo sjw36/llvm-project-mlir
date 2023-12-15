@@ -171,7 +171,7 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     funcPm.addPass(rock::createRockTransformToMemrefPass());
     funcPm.addPass(rock::createRockLowerGlobalSyncPass());
     funcPm.addPass(rock::createRockLoopsToCfPass());
-    
+
     // rock lowering (block to thread)
     /* rocmlir-opt --rock-lower-global-sync
      *   --convert-rock-to-gpu

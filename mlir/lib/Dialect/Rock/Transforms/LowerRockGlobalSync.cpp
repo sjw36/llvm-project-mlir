@@ -60,8 +60,9 @@ struct GlobalSyncRewritePattern : public OpRewritePattern<GlobalSyncOp> {
 };
 } // end namespace
 
-LogicalResult GlobalSyncRewritePattern::matchAndRewrite(
-    GlobalSyncOp op, PatternRewriter &b) const {
+LogicalResult
+GlobalSyncRewritePattern::matchAndRewrite(GlobalSyncOp op,
+                                          PatternRewriter &b) const {
   auto loc = op->getLoc();
   auto func = op->getParentOfType<func::FuncOp>();
   Region &body = func.getBody();
@@ -76,12 +77,13 @@ LogicalResult GlobalSyncRewritePattern::matchAndRewrite(
   }
   Value semaphore = body.getArgument(body.getNumArguments() - 1);
   auto gridSizeAttr = func->getAttrOfType<IntegerAttr>("grid_size");
-    
+
   auto zeroIdx = b.createOrFold<arith::ConstantIndexOp>(loc, 0);
 
   auto zero = b.createOrFold<arith::ConstantIntOp>(loc, 0, semaElemTy);
   auto one = b.createOrFold<arith::ConstantIntOp>(loc, 1, semaElemTy);
-  auto gridSize = b.createOrFold<arith::ConstantIntOp>(loc, gridSizeAttr.getInt(), semaElemTy);
+  auto gridSize = b.createOrFold<arith::ConstantIntOp>(
+      loc, gridSizeAttr.getInt(), semaElemTy);
 
   // build global sync barrier
   // Initialize counter to 0
@@ -100,7 +102,7 @@ LogicalResult GlobalSyncRewritePattern::matchAndRewrite(
 
   // create private buffer to keep while loops from DCE
   auto privateSpace = b.getAttr<gpu::AddressSpaceAttr>(
-         gpu::GPUDialect::getPrivateAddressSpace());
+      gpu::GPUDialect::getPrivateAddressSpace());
   auto localTy = MemRefType::get({1}, semaElemTy, AffineMap(), privateSpace);
   auto localMem = b.create<rock::GpuAllocOp>(loc, localTy);
   // > if (wg_thread == 0)
@@ -113,22 +115,23 @@ LogicalResult GlobalSyncRewritePattern::matchAndRewrite(
   {
     auto ifop = b.create<scf::IfOp>(loc, wgCond, false);
     OpBuilder ifb = ifop.getThenBodyBuilder();
-    ifb.create<scf::WhileOp>(loc, TypeRange{}, ValueRange{},
+    ifb.create<scf::WhileOp>(
+        loc, TypeRange{}, ValueRange{},
         [&](OpBuilder &scfb, Location loc, ValueRange args) {
-          auto semaVal = scfb.create<memref::LoadOp>(loc, semaphore, zeroIdx, true);
+          auto semaVal =
+              scfb.create<memref::LoadOp>(loc, semaphore, zeroIdx, true);
           scfb.create<memref::StoreOp>(loc, semaVal, localMem, zeroIdx, true);
-          auto cntCond = scfb.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne,
-                                                    semaVal, zero);
+          auto cntCond = scfb.create<arith::CmpIOp>(
+              loc, arith::CmpIPredicate::ne, semaVal, zero);
           scfb.create<scf::ConditionOp>(loc, cntCond, args);
         },
         [&](OpBuilder &scfb, Location loc, ValueRange args) {
           scfb.create<scf::YieldOp>(loc, args);
-        }
-      );
+        });
   }
   // > barrier // wait all for zero
   b.create<gpu::BarrierOp>(loc);
-    
+
   // > if (wg_thread == 0) {
   // >   atomic_inc(counter); // each wg incrments
   // >   while (counter != num_blocks); // spin loop for every wg
@@ -136,22 +139,23 @@ LogicalResult GlobalSyncRewritePattern::matchAndRewrite(
   {
     auto ifop = b.create<scf::IfOp>(loc, wgCond, false);
     OpBuilder ifb = ifop.getThenBodyBuilder();
-    ifb.create<memref::AtomicRMWOp>(loc, arith::AtomicRMWKind::addi,
-                                    one, semaphore, zeroIdx);
-    ifb.create<scf::WhileOp>(loc, TypeRange{}, ValueRange{},
+    ifb.create<memref::AtomicRMWOp>(loc, arith::AtomicRMWKind::addi, one,
+                                    semaphore, zeroIdx);
+    ifb.create<scf::WhileOp>(
+        loc, TypeRange{}, ValueRange{},
         [&](OpBuilder &scfb, Location loc, ValueRange args) {
-          auto semaVal = scfb.create<memref::LoadOp>(loc, semaphore, zeroIdx, true);
+          auto semaVal =
+              scfb.create<memref::LoadOp>(loc, semaphore, zeroIdx, true);
           scfb.create<memref::StoreOp>(loc, semaVal, localMem, zeroIdx, true);
-          auto cntCond = scfb.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne,
-                                                    semaVal, gridSize);
+          auto cntCond = scfb.create<arith::CmpIOp>(
+              loc, arith::CmpIPredicate::ne, semaVal, gridSize);
           scfb.create<scf::ConditionOp>(loc, cntCond, args);
         },
         [&](OpBuilder &scfb, Location loc, ValueRange args) {
           scfb.create<scf::YieldOp>(loc, args);
-        }
-      );
+        });
   }
-  
+
   // > barrier // wait all for num_blocks
   b.create<gpu::BarrierOp>(loc);
 
@@ -165,8 +169,7 @@ void RockLowerGlobalSyncPass::runOnOperation() {
 
   target.addIllegalOp<rock::GlobalSyncOp>();
   target.addLegalDialect<arith::ArithDialect, memref::MemRefDialect,
-                         scf::SCFDialect, gpu::GPUDialect,
-                         rock::RockDialect>();
+                         scf::SCFDialect, gpu::GPUDialect, rock::RockDialect>();
 
   RewritePatternSet patterns(ctx);
   patterns.add<GlobalSyncRewritePattern>(ctx);
