@@ -189,6 +189,10 @@ void LowerRockOpsToGPUPass::runOnOperation() {
       gpuFunc->setAttr("rock.shared_buffer_size", attr);
     }
 
+    if (auto attr = theFunc->getAttr("rock.has_global_sync")) {
+      gpuFunc->setAttr("rock.has_global_sync", attr);
+    }
+
     int32_t indexWidth = 32;
     if (theFunc->hasAttr("rock.64bitindex"))
       indexWidth = 64;

@@ -184,6 +184,8 @@ struct LaunchRewritePattern : public OpRewritePattern<mhal::LaunchOp> {
     auto func = *getCalledFunc(op);
     Location floc = func.getLoc();
 
+    bool hasGlobalSync = (bool)kernelPkg->getAttributes().get("rock.has_global_sync");
+
     // 2. create dummy gpu.module for reference from gpu.launch_func
     //    - with gpu.binary, arch attributes
     //    - and gpu.func (referenced by gpu.launch_func
@@ -194,7 +196,7 @@ struct LaunchRewritePattern : public OpRewritePattern<mhal::LaunchOp> {
 
     FunctionOpInterface funcIF(func);
     auto funcName = funcIF.getName();
-    auto gpuModuleName = funcName + "_module";
+    auto gpuModuleName = "__module_" + funcName;
 
     auto gpuModule = module.lookupSymbol<gpu::GPUModuleOp>(gpuModuleName.str());
     if (!gpuModule) {
@@ -210,8 +212,14 @@ struct LaunchRewritePattern : public OpRewritePattern<mhal::LaunchOp> {
     auto gpuFunc = gpuModule.lookupSymbol<gpu::GPUFuncOp>(funcName);
     if (!gpuFunc) {
       OpBuilder b(gpuModule.getContext());
-      gpuFunc =
-          b.create<gpu::GPUFuncOp>(floc, funcName, func.getFunctionType());
+      auto funcTy = func.getFunctionType();
+      if (hasGlobalSync) {
+        SmallVector<Type> argTypes(funcTy.getInputs().begin(),
+                                   funcTy.getInputs().end());
+        argTypes.push_back(MemRefType::get({1}, b.getI32Type()));
+        funcTy = funcTy.clone(argTypes, funcTy.getResults());
+      }
+      gpuFunc = b.create<gpu::GPUFuncOp>(floc, funcName, funcTy);
       gpuFunc->setAttr("block_size", b.getI32IntegerAttr(blockSize));
       gpuFunc->setAttr("grid_size", b.getI32IntegerAttr(gridSize));
       gpuFunc->setAttr(gpu::GPUDialect::getKernelFuncAttrName(),
@@ -255,7 +263,7 @@ struct LaunchRewritePattern : public OpRewritePattern<mhal::LaunchOp> {
 
     SmallVector<Value> copyBackOprs(func.getNumArguments(), Value());
     for (; i < operands.size(); ++i) {
-      auto fidx = i - diff;
+      size_t fidx = i - diff;
       Value opr = operands[i];
       // move input memories to GPU
       if (opr.getType().isa<MemRefType>()) {
@@ -269,6 +277,20 @@ struct LaunchRewritePattern : public OpRewritePattern<mhal::LaunchOp> {
       gpuOperands.push_back(opr);
     }
 
+    // Make gpu.launch_func
+    if (hasGlobalSync) {
+      auto intTy = rw.getI32Type();
+      auto semaTy = MemRefType::get({1}, intTy);
+      auto constOne = rw.createOrFold<arith::ConstantIntOp>(loc, 1, intTy);
+      auto zeroOp = rw.createOrFold<arith::ConstantIndexOp>(loc, 0);
+      auto allocOp = rw.create<memref::AllocOp>(loc, semaTy);
+      rw.create<memref::StoreOp>(loc, constOne, allocOp, ValueRange{zeroOp});
+      size_t fidx = i - diff;
+      auto gpuMem = moveMemory(rw, op, allocOp, fidx, true, false,
+                               copyBackOprs, asyncDeps);
+      gpuOperands.push_back(gpuMem);
+    }
+    
     // The gpu.launch_func requires 1 and only 1 token
     if (asyncDeps.size() == 0)
       // There must be at least 1 token
@@ -279,7 +301,6 @@ struct LaunchRewritePattern : public OpRewritePattern<mhal::LaunchOp> {
       asyncDeps = {launchWait};
     }
 
-    // Make gpu.launch_func
     auto gpuLaunchOp = rw.create<gpu::LaunchFuncOp>(
         loc, asyncDeps, gpuFunc, gpu::KernelDim3{gridSizeIdx, oneIdx, oneIdx},
         gpu::KernelDim3{blockSizeIdx, oneIdx, oneIdx}, dynamicSharedMemorySize,

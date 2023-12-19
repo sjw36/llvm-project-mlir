@@ -86,13 +86,16 @@ struct MHALPackageTargetsPass
                     b.getContext(), mhal::TargetObjectType::ELF, archName,
                     objAttrs, binaryAttr);
 
-                DictionaryAttr pkgAttrs;
+                SmallVector<NamedAttribute> pkgAttrs;
+                if (auto attr = func->getAttr("rock.has_global_sync")) {
+                  pkgAttrs.push_back(b.getNamedAttr("rock.has_global_sync", attr));
+                }
                 // = b.getDictionaryAttr({
                 //     b.getNamedAttr("bare_ptr_abi", true)
                 // });
                 auto xpkg = mhal::KernelPackageAttr::get(
                     b.getContext(), mhal::TargetType::GPU, archName, funcName,
-                    {gridSize, blockSize}, pkgAttrs, xobj);
+                    {gridSize, blockSize}, b.getDictionaryAttr(pkgAttrs), xobj);
 
                 kernelImpls[kernelFunc].push_back(xpkg);
               }
