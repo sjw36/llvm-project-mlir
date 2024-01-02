@@ -277,7 +277,7 @@ struct LaunchRewritePattern : public OpRewritePattern<mhal::LaunchOp> {
       gpuOperands.push_back(opr);
     }
 
-    // Make gpu.launch_func
+    // Add semaphore param
     if (hasGlobalSync) {
       auto intTy = rw.getI32Type();
       auto semaTy = MemRefType::get({1}, intTy);
@@ -301,6 +301,7 @@ struct LaunchRewritePattern : public OpRewritePattern<mhal::LaunchOp> {
       asyncDeps = {launchWait};
     }
 
+    // Make gpu.launch_func
     auto gpuLaunchOp = rw.create<gpu::LaunchFuncOp>(
         loc, asyncDeps, gpuFunc, gpu::KernelDim3{gridSizeIdx, oneIdx, oneIdx},
         gpu::KernelDim3{blockSizeIdx, oneIdx, oneIdx}, dynamicSharedMemorySize,
