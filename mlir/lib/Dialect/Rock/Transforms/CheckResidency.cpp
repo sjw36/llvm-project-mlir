@@ -107,9 +107,11 @@ public:
 
     // Total blocks per CU
     int64_t blocksPerCU = std::min(blocksPerCUByGPRs, blocksPerCUByLDS);
+    int64_t reqNumCU = (gridSize - blocksPerCU) / blocksPerCU + 1;
 
     LLVM_DEBUG(llvm::dbgs() << "  ==================================\n"
-                            << "  Blocks Per CU:      " << blocksPerCU << "\n");
+                            << "  Blocks Per CU:      " << blocksPerCU << "\n"
+                            << "  Required Num CUs:   " << reqNumCU << "\n");
 
     // All blocks resident
     int64_t numCUsRequired = (gridSize / blocksPerCU);

@@ -89,11 +89,16 @@ GlobalSyncRewritePattern::matchAndRewrite(GlobalSyncOp op,
   // Initialize counter to 0
   // > if (thread == 0)
   // >   counter = 0;   // only thread zero
-  auto globalIdX = b.create<gpu::GlobalIdOp>(loc, gpu::Dimension::x); // x
+  auto blockIdX = b.create<gpu::BlockIdOp>(loc, gpu::Dimension::x); // x
+  auto threadIdX = b.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x); // x
+
   // auto globalIdY = b.create<gpu::GlobalIdOp>(loc, gpu::Dimension::y); // x
   // auto globalIdZ = b.create<gpu::GlobalIdOp>(loc, gpu::Dimension::z); // x
-  auto gblCond = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
-                                         globalIdX, zeroIdx);
+  auto blkCond = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                         blockIdX, zeroIdx);
+  auto thdCond = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                         threadIdX, zeroIdx);
+  auto gblCond = b.create<arith::AndIOp>(loc, ValueRange{blkCond, thdCond});
   {
     auto ifop = b.create<scf::IfOp>(loc, gblCond, false);
     OpBuilder ifb = ifop.getThenBodyBuilder();
@@ -107,7 +112,6 @@ GlobalSyncRewritePattern::matchAndRewrite(GlobalSyncOp op,
   auto localMem = b.create<rock::GpuAllocOp>(loc, localTy);
   // > if (wg_thread == 0)
   // >   while (counter != 0); // spin loop for every wg
-  auto threadIdX = b.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x); // x
   // auto threadIdY = b.create<gpu::ThreadIdOp>(loc, gpu::Dimension::y); // x
   // auto threadIdZ = b.create<gpu::ThreadIdOp>(loc, gpu::Dimension::z); // x
   auto wgCond = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
