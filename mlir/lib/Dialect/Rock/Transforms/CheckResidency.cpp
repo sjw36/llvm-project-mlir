@@ -121,8 +121,10 @@ public:
     auto intTy = IntegerType::get(func->getContext(), 32);
     func->setAttr("rock.blocks_per_cu", IntegerAttr::get(intTy, blocksPerCU));
 
-    if (hasGlobalSync && !allBlocksResident)
+    if (hasGlobalSync && !allBlocksResident) {
+      LLVM_DEBUG(llvm::dbgs() << "Note: Full residency not achieveable, removing solution\n");
       return removeBinary();
+    }
     return success();
   }
 
