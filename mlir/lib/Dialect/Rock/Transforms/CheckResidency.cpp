@@ -105,8 +105,12 @@ public:
     // Compute total blocks per CU based on Shared Memory Allocation
     int64_t blocksPerCUByLDS = arch.totalSharedMemPerCU / ldsRequired;
 
+    // Test max workgroup size
+    int64_t maxBlocksByThreads = arch.maxThreadsPerCU / blockSize;
+    
     // Total blocks per CU
-    int64_t blocksPerCU = std::min(blocksPerCUByGPRs, blocksPerCUByLDS);
+    int64_t blocksPerCU = std::min(std::min(blocksPerCUByGPRs, blocksPerCUByLDS),
+				   maxBlocksByThreads);
     int64_t reqNumCU = (gridSize - blocksPerCU) / blocksPerCU + 1;
 
     LLVM_DEBUG(llvm::dbgs() << "  ==================================\n"
