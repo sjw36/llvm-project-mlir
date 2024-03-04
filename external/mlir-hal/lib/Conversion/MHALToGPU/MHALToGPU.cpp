@@ -281,7 +281,7 @@ struct LaunchRewritePattern : public OpRewritePattern<mhal::LaunchOp> {
     if (hasGlobalSync) {
       auto intTy = rw.getI32Type();
       auto semaTy = MemRefType::get({1}, intTy);
-      auto constOne = rw.createOrFold<arith::ConstantIntOp>(loc, 1, intTy);
+      auto constOne = rw.createOrFold<arith::ConstantIntOp>(loc, 0, intTy);
       auto zeroOp = rw.createOrFold<arith::ConstantIndexOp>(loc, 0);
       auto allocOp = rw.create<memref::AllocOp>(loc, semaTy);
       rw.create<memref::StoreOp>(loc, constOne, allocOp, ValueRange{zeroOp});
