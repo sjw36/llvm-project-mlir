@@ -49,35 +49,61 @@ LogicalResult UnsignedCastLoweringPattern::matchAndRewrite(
     ConversionPatternRewriter &rewriter) const {
   if (op.getDomainName() != "rocmlir")
     return rewriter.notifyMatchFailure(op, "domain isn't rocmlir");
-  if (op.getOperatorName() != "unsigned_cast")
-    return rewriter.notifyMatchFailure(op, "isn't an unsigned_cast");
+  if (op.getOperatorName() != "unsigned_cast" &&
+      op.getOperatorName() != "unsigned_div")
+    return rewriter.notifyMatchFailure(
+        op, "isn't an unsigned_cast or unsigned_div");
+
   Location loc = op.getLoc();
   auto outType = cast<RankedTensorType>(op.getResults().front().getType());
+  Type inElemType =
+      cast<RankedTensorType>(op.getInputs().front().getType()).getElementType();
   Type outElemType = outType.getElementType();
   Value emptyTensor = rewriter.create<tensor::EmptyOp>(
       loc, outType, /*dynamic_sizes=*/ValueRange{});
 
   SmallVector<AffineMap> iterationMaps(
-      2, rewriter.getMultiDimIdentityMap(outType.getRank()));
+      op.getInputs().size() + 1,
+      rewriter.getMultiDimIdentityMap(outType.getRank()));
   SmallVector<utils::IteratorType> iteratorKinds(outType.getRank(),
                                                  utils::IteratorType::parallel);
-  auto cast = rewriter.create<linalg::GenericOp>(
+  auto genericOp = rewriter.create<linalg::GenericOp>(
       loc, outType, adaptor.getInputs(), emptyTensor, iterationMaps,
       iteratorKinds, [&](OpBuilder &b, Location loc, ValueRange inputs) {
         Value result;
-        if (isa<FloatType>(outElemType))
-          result = b.create<arith::UIToFPOp>(loc, outElemType, inputs[0]);
-        else
-          result = b.create<arith::ExtUIOp>(loc, outElemType, inputs[0]);
+        if (op.getOperatorName() == "unsigned_cast") {
+          assert(inputs.size() == 2);
+          if (isa<IntegerType>(inElemType)) {
+            if (isa<FloatType>(outElemType)) {
+              result = b.create<arith::UIToFPOp>(loc, outElemType, inputs[0]);
+            } else if (outElemType.getIntOrFloatBitWidth() >
+                       inElemType.getIntOrFloatBitWidth()) {
+              result = b.create<arith::ExtUIOp>(loc, outElemType, inputs[0]);
+            } else {
+              result = b.create<arith::TruncIOp>(loc, outElemType, inputs[0]);
+            }
+          } else {
+            assert(isa<FloatType>(inElemType));
+            assert(isa<IntegerType>(outElemType));
+            result = b.create<arith::FPToUIOp>(loc, outElemType, inputs[0]);
+          }
+        } else if (op.getOperatorName() == "unsigned_div") {
+          assert(isa<IntegerType>(outElemType));
+          assert(isa<IntegerType>(inElemType));
+          assert(inputs.size() == 3);
+          result =
+              b.create<arith::DivUIOp>(loc, outElemType, inputs[0], inputs[1]);
+        }
         b.create<linalg::YieldOp>(loc, result);
       });
-  rewriter.replaceOp(op, cast);
+  rewriter.replaceOp(op, genericOp);
   return success();
 }
 
 void mlir::rock::populateRocmlirCustomTosaToLinalgTarget(
     ConversionTarget &target) {
   target.addLegalOp<linalg::GenericOp, linalg::YieldOp, arith::ExtUIOp,
+                    arith::TruncIOp, arith::DivUIOp, arith::FPToUIOp,
                     arith::UIToFPOp, tensor::EmptyOp>();
   target.addDynamicallyLegalOp<tosa::CustomOp>(
       [](tosa::CustomOp op) { return op.getDomainName() != "rocmlir"; });
