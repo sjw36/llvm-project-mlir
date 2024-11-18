@@ -990,20 +990,20 @@ LogicalResult QuantizeLinearConverter::matchAndRewrite(
   Type biasType = outputType;
   if (bias) {
     biasType = getShapedElementTy(bias);
-    if (biasType.getIntOrFloatBitWidth() < 32) {
-      biasType = isa<IntegerType>(biasType) ? cast<Type>(rewriter.getI32Type())
-                                            : cast<Type>(rewriter.getF32Type());
-      bias = createCastOp(rewriter, loc, biasType, bias,
-                          op.getBias().getType().getElementType());
-    }
   }
-  Value asShort =
-      createCastOp(rewriter, loc, biasType, scaled,
-                   op.getScale().getType().getElementType(), origOutputType);
+  if ((bias || origOutputType != outputType) &&
+      biasType.getIntOrFloatBitWidth() < 32) {
+    biasType = isa<IntegerType>(biasType) ? cast<Type>(rewriter.getI32Type())
+                                          : cast<Type>(rewriter.getF32Type());
+  }
+  Value asShort = createCastOp(rewriter, loc, biasType, scaled, elementType);
   Value biased = asShort;
-  if (bias)
+  if (bias) {
+    bias = createCastOp(rewriter, loc, biasType, bias,
+                        op.getBias().getType().getElementType());
     biased =
         createOpAndInfer<tosa::AddOp>(rewriter, loc, biasType, asShort, bias);
+  }
 
   Value result = biased;
   if (biasType != outputType) {
@@ -1025,13 +1025,12 @@ LogicalResult QuantizeLinearConverter::matchAndRewrite(
       minI = APInt(64, (int64_t)(minF.convertToFloat()));
       maxI = APInt(64, (int64_t)(minF.convertToFloat()));
     } else {
-      if (origOutputType.isUnsignedInteger()) {
-        minI = APInt::getMinValue(width);
-        maxI = APInt::getMaxValue(width);
-      } else {
-        minI = APInt::getSignedMinValue(width);
-        maxI = APInt::getSignedMaxValue(width);
-      }
+      minI = origOutputType.isUnsignedInteger()
+                 ? APInt::getMinValue(width)
+                 : APInt::getSignedMinValue(width);
+      maxI = origOutputType.isUnsignedInteger()
+                 ? APInt::getMaxValue(width)
+                 : APInt::getSignedMaxValue(width);
       minF.convertFromAPInt(minI, /*IsSigned=*/origOutputType.isSignedInteger(),
                             APFloat::rmNearestTiesToEven);
       maxF.convertFromAPInt(maxI, /*IsSigned=*/origOutputType.isSignedInteger(),
@@ -1040,12 +1039,14 @@ LogicalResult QuantizeLinearConverter::matchAndRewrite(
 
     FloatAttr minFatt = rewriter.getFloatAttr(rewriter.getF32Type(), minF);
     FloatAttr maxFatt = rewriter.getFloatAttr(rewriter.getF32Type(), maxF);
-    result = createOpAndInfer<tosa::ClampOp>(
-        rewriter, loc, biasType, result, minI.getSExtValue(),
-        maxI.getSExtValue(), minFatt, maxFatt);
-    result =
-        createCastOp(rewriter, loc, outputType, result,
-                     op.getBias().getType().getElementType(), origOutputType);
+    auto minVal = origOutputType.isUnsignedInteger() ? minI.getZExtValue()
+                                                     : minI.getSExtValue();
+    auto maxVal = origOutputType.isUnsignedInteger() ? maxI.getZExtValue()
+                                                     : maxI.getSExtValue();
+    result = createOpAndInfer<tosa::ClampOp>(rewriter, loc, biasType, result,
+                                             minVal, maxVal, minFatt, maxFatt);
+    result = createCastOp(rewriter, loc, outputType, result, biasType,
+                          origOutputType);
   }
   rewriter.replaceOp(op, result);
 
@@ -1158,29 +1159,33 @@ LiteralConverter::matchAndRewrite(migraphx::LiteralOp op, OpAdaptor adaptor,
   MIXRShapedType type = op.getResult().getType();
   RankedTensorType newType =
       cast<RankedTensorType>(getTypeConverter()->convertType(type));
-  if (!newType)
-    return failure();
 
   ElementsAttr value = op.getValue();
-  if (value.isSplat() && value.getType() != newType) {
-    // Get the original splat value (for example SI8 value)
-    Attribute splatValue = value.getSplatValue<Attribute>();
+  if (value.getType() != newType) {
+    if (value.isSplat()) {
+      // Get the original splat value (for example SI8 value)
+      Attribute splatValue = value.getSplatValue<Attribute>();
 
-    // Reinterpret the splatValue under the new type (for example SI8 -> I8),
-    // preserving bytes
-    Attribute newSplatValue;
-    if (auto intAttr = dyn_cast<IntegerAttr>(splatValue))
-      newSplatValue =
-          IntegerAttr::get(newType.getElementType(), intAttr.getValue());
-    else if (auto floatAttr = dyn_cast<FloatAttr>(splatValue))
-      newSplatValue =
-          FloatAttr::get(newType.getElementType(), floatAttr.getValue());
-    else
-      return failure();
+      // Reinterpret the splatValue under the new type (for example SI8 -> I8),
+      // preserving bytes
+      Attribute newSplatValue;
+      if (auto intAttr = dyn_cast<IntegerAttr>(splatValue))
+        newSplatValue =
+            IntegerAttr::get(newType.getElementType(), intAttr.getValue());
+      else if (auto floatAttr = dyn_cast<FloatAttr>(splatValue))
+        newSplatValue =
+            FloatAttr::get(newType.getElementType(), floatAttr.getValue());
+      else
+        return failure();
 
-    // Create the new SplatElementsAttr (for example I8 type) with preserved
-    // value bytes
-    value = SplatElementsAttr::get(newType, newSplatValue);
+      // Create the new SplatElementsAttr (for example I8 type) with preserved
+      // value bytes
+      value = SplatElementsAttr::get(newType, newSplatValue);
+    } else {
+      // Reinterpret existing values under the new type
+      auto originalAttr = cast<mlir::DenseElementsAttr>(value);
+      value = DenseElementsAttr::get(newType, originalAttr.getRawData());
+    }
   }
 
   // Replace with the new operation using the updated tensor type
