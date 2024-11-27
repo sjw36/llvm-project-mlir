@@ -821,6 +821,14 @@ struct AttentionQuantizedArgIndex {
   static const size_t bias = 6;
 };
 
+struct AttentionArgIndex {
+  static const size_t q = 0;
+  static const size_t k = 1;
+  static const size_t v = 2;
+  static const size_t scale = 3;
+  static const size_t bias = 4;
+};
+
 struct GenParams {
   std::optional<rock::KernelType> operation = std::nullopt;
   SmallVector<Type, 5> types;
@@ -2159,43 +2167,52 @@ static void getAttentionTypes(SmallVectorImpl<Type> &result,
   bool isQuantized =
       elemTypes[0] == IntegerType::get(elemTypes[0].getContext(), 8);
 
+  const size_t qIndex =
+      isQuantized ? AttentionQuantizedArgIndex::q : AttentionArgIndex::q;
+  const size_t kIndex =
+      isQuantized ? AttentionQuantizedArgIndex::k : AttentionArgIndex::k;
+  const size_t vIndex =
+      isQuantized ? AttentionQuantizedArgIndex::v : AttentionArgIndex::v;
+  const size_t scaleIndex = isQuantized ? AttentionQuantizedArgIndex::scale
+                                        : AttentionArgIndex::scale;
+  const size_t biasIndex =
+      isQuantized ? AttentionQuantizedArgIndex::bias : AttentionArgIndex::bias;
+  const size_t outputIndex = biasIndex;
+
   MemRefType qType = MemRefType::get(transposeQ ? transposedQDims : qDims,
-                                     elemTypes[0]),
+                                     elemTypes[qIndex]),
              kType = MemRefType::get(transposeK ? kDims : transposedKDims,
-                                     elemTypes[1]),
+                                     elemTypes[kIndex]),
              vType = MemRefType::get(transposeV ? transposedVDims : vDims,
-                                     elemTypes[2]);
+                                     elemTypes[vIndex]);
 
   result.push_back(qType);
   result.push_back(kType);
   result.push_back(vType);
-  unsigned optionalArgsCounter{3};
   if (isQuantized) {
     // quant bias is to be broadcasted
     SmallVector<int64_t> quantBiasDims{1, 1, 1};
-    MemRefType qbType =
-        MemRefType::get(quantBiasDims, elemTypes[optionalArgsCounter++]);
+    MemRefType qbType = MemRefType::get(
+        quantBiasDims, elemTypes[AttentionQuantizedArgIndex::quantBias]);
     result.push_back(qbType);
     // quant scale is to be broadcasted
     SmallVector<int64_t> quantScaleDims{1, 1, 1};
-    MemRefType qsType =
-        MemRefType::get(quantScaleDims, elemTypes[optionalArgsCounter++]);
+    MemRefType qsType = MemRefType::get(
+        quantScaleDims, elemTypes[AttentionQuantizedArgIndex::quantScale]);
     result.push_back(qsType);
   }
   if (hasAttnScale) {
     SmallVector<int64_t> scaleDims{groupSize, sequenceLengthQ, sequenceLengthK};
-    MemRefType sType =
-        MemRefType::get(scaleDims, elemTypes[optionalArgsCounter++]);
+    MemRefType sType = MemRefType::get(scaleDims, elemTypes[scaleIndex]);
     result.push_back(sType);
   }
   if (hasAttnBias) {
     SmallVector<int64_t> biasDims{groupSize, sequenceLengthQ, sequenceLengthK};
-    MemRefType bType =
-        MemRefType::get(biasDims, elemTypes[optionalArgsCounter++]);
+    MemRefType bType = MemRefType::get(biasDims, elemTypes[biasIndex]);
     result.push_back(bType);
   }
-  MemRefType outType =
-      MemRefType::get(transposeO ? transposedODims : oDims, elemTypes.back());
+  MemRefType outType = MemRefType::get(transposeO ? transposedODims : oDims,
+                                       elemTypes[outputIndex]);
   result.push_back(outType);
 }
 
@@ -3194,6 +3211,9 @@ static LogicalResult populateHostHarnessLogic(
       break;
     case rock::KernelType::Attention:
       int32_t optionalArgsCounter{3};
+      bool isQuantized = genParams.types[0] == b.getI8Type();
+      if (isQuantized)
+        optionalArgsCounter += 2;
       if (hasAttnScale)
         ++optionalArgsCounter;
       if (hasAttnBias)
