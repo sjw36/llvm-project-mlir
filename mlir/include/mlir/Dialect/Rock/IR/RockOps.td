@@ -206,12 +206,13 @@ def Rock_ReduceOp :
 }
 
 def Rock_AttentionOp :
-  Rock_Op<"attention", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>, RockFusionRoot]>,
+  Rock_Op<"attention", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>, RockFusionRoot, AttrSizedOperandSegments]>,
   Arguments<(ins
     TensorOrMemRefOf<[F32, F16, I8]>:$queries,
     TensorOrMemRefOf<[F32, F16, I8]>:$keys,
     TensorOrMemRefOf<[F32, F16]>:$values,
     Variadic<TensorOrMemRefOf<[F32, F16, I8]>>:$preSoftmaxElemWiseInputs,
+    Optional<TensorOrMemRefOf<[I32]>>:$currentSeqLen,
     TensorOrMemRefOf<[F32, F16]>:$out,
     UnitAttr:$qTransposed,
     UnitAttr:$kTransposed,
@@ -244,6 +245,7 @@ def Rock_AttentionOp :
   let assemblyFormat = [{
     `{` `\n`
         ` ` `qk` `=` (`tr` $qTransposed^)? $queries `*` (`tr` $kTransposed^)? $keys `:` type($queries) `,` type($keys) `\n`
+        (`currentSeqLen` `=` `(` $currentSeqLen^ `:` type($currentSeqLen) `)` `\n`)?
         (`qk` `=` `elementwise` (`otherIns` `(` $preSoftmaxElemWiseInputs^ `:` type($preSoftmaxElemWiseInputs) `)`)? $preSoftmaxBody^ `\n`)?
         (`tr` $oTransposed^)? $out `=` `softmax` `(` `qk` `)` `*` (`tr` $vTransposed^)? $values `:` type($values) `->` type($out) `\n`
     `}` attr-dict (`->` type($result)^)?
@@ -431,11 +433,12 @@ def Rock_GridwiseGemmAccelOp :
 
 // gridwise_attention_accel
 def Rock_GridwiseAttentionAccelOp :
-    Rock_Op<"gridwise_attention_accel", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>, RockFusionRoot]>,
+    Rock_Op<"gridwise_attention_accel", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>, RockFusionRoot, AttrSizedOperandSegments]>,
     Arguments<(ins MemRefRankOf<[F32, F16, I8], [3]>:$queries,
                    MemRefRankOf<[F32, F16, I8], [3]>:$keys,
                    MemRefRankOf<[F32, F16], [3]>:$values,
                    Variadic<TensorOrMemRefOf<[F32, F16, I8]>>:$preSoftmaxElemWiseInputs,
+                   Optional<MemRefRankOf<[I32], [1]>>:$currentSeqLen,
                    MemRefRankOf<[F32, F16], [3]>:$out,
                    StrAttr:$arch,
                    Rock_GemmFeaturesAttr:$features,
@@ -677,7 +680,7 @@ def Rock_TransformingForOp :
     Results<(outs Variadic<AnyType>:$results)> {
   let summary = "for loop with coordinate transforms";
   let description = [{
-    Loops over several a rectangular regeon of dimensions `bounds` in several
+    Loops over several a rectangular region of dimensions `bounds` in several
     iteration domains, which are coordinate spaces that are the upper coordinates
     for a sequence of coordinate transformations.
 
@@ -779,7 +782,7 @@ def Rock_TransformingForOp :
       return *(getLowerStarts().getValues<uint32_t>().begin() + n);
     }
 
-    // Retreive the block arguments corresponding to the lower coordinates
+    // Retrieve the block arguments corresponding to the lower coordinates
     // for a given iteration domain.
     Block::BlockArgListType getLowerCoords(uint32_t domain) {
       uint32_t start = getLowerStart(domain);

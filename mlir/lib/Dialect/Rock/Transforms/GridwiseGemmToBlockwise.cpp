@@ -1330,7 +1330,7 @@ struct GridwiseAttentionAccelRewritePattern
   // attention kernel will perform softmax normalization on rows.
   // Therefore, having zeros -- zero not being the minimum representable
   // value in the element type -- going to affect all the values
-  // post normalization. Therefore, this function creates a trasnforming
+  // post normalization. Therefore, this function creates a transforming
   // for loop that overwrites out of bounds values of first gemm output
   // to be negative infinity.
   void createFirstGemmNegInfPadding(PatternRewriter &rewriter, Location loc,
@@ -1376,6 +1376,59 @@ struct GridwiseAttentionAccelRewritePattern
         OpBuilder thenb = ifb.getThenBodyBuilder();
         thenb.create<InBoundsStoreOp>(loc, negInfTyped, gemm0OutBuffer,
                                       ValueRange{upperCoords[4]});
+      }
+    }
+  }
+
+  void setGemm0OutputOutOfScopeKVCache(
+      PatternRewriter &rewriter, Location loc,
+      layout::GridCoordinates gridCoords, Value gemm0OutBuffer,
+      RegsAsMatrixSubTiles gemm0OutSubTileViews, Value currentSeqLen,
+      Value mLoopIV, Value gemm0MBlocksLastIter) const {
+    if (currentSeqLen) {
+      auto isLastIteration = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::eq, mLoopIV, gemm0MBlocksLastIter);
+      scf::IfOp ifb = rewriter.create<scf::IfOp>(loc, isLastIteration,
+                                                 /*withElseRegion=*/false);
+      {
+        OpBuilder thenb = ifb.getThenBodyBuilder();
+
+        MemRefType gemm0OutBufferType =
+            cast<MemRefType>(gemm0OutBuffer.getType());
+        auto negInfTyped = createConstantFloatOp(
+            thenb, loc, gemm0OutBufferType.getElementType(),
+            gemm0OutBufferType.getElementType(),
+            -std::numeric_limits<float>::infinity());
+        // Get current workitem ID.
+        auto tid = thenb.create<WorkitemIdOp>(loc, thenb.getIndexType());
+        int64_t elementsInThreadBuffer = gemm0OutBufferType.getNumElements();
+        Value zero = thenb.createOrFold<ConstantIndexOp>(loc, 0);
+        auto loop = thenb.create<TransformingForOp>(
+            loc,
+            ArrayRef<ValueRange>{{gridCoords.g_block, gridCoords.m_block,
+                                  gridCoords.n_block, tid, zero},
+                                 {zero, zero, zero, zero, zero}},
+            ArrayRef<Attribute>{gemm0OutSubTileViews.gridSubTile,
+                                thenb.getArrayAttr({})},
+            /*bounds=*/ArrayRef<int64_t>{1, 1, 1, 1, elementsInThreadBuffer},
+            /*strides=*/ArrayRef<int64_t>{1, 1, 1, 1, 1},
+            /*forceUnroll=*/true, /*useIndexDiffs=*/true);
+        {
+          OpBuilder::InsertionGuard guard(thenb);
+          thenb.setInsertionPointToStart(loop.getBody());
+
+          Block::BlockArgListType lowerCoords = loop.getLowerCoords(0);
+          Block::BlockArgListType upperCoords = loop.getLowerCoords(1);
+          auto isInvalid = thenb.create<arith::CmpIOp>(
+              loc, arith::CmpIPredicate::uge, lowerCoords[2], currentSeqLen);
+          scf::IfOp ifb = thenb.create<scf::IfOp>(loc, isInvalid,
+                                                  /*withElseRegion=*/false);
+          {
+            OpBuilder thenb = ifb.getThenBodyBuilder();
+            thenb.create<InBoundsStoreOp>(loc, negInfTyped, gemm0OutBuffer,
+                                          ValueRange{upperCoords[4]});
+          }
+        }
       }
     }
   }
@@ -1630,6 +1683,8 @@ struct GridwiseAttentionAccelRewritePattern
     Value trOut = transposeAttnOperand(rewriter, loc, out);
     ArrayRef<int64_t> outShape = cast<MemRefType>(trOut.getType()).getShape();
     Type elemTypeOut = cast<MemRefType>(trOut.getType()).getElementType();
+
+    TypedValue<MemRefType> currentSeqLenTensor = op.getCurrentSeqLen();
 
     // Gemm0 out is casted to be elemTypeV
     Type elemTypeQxK = elemTypeV;
@@ -1928,17 +1983,85 @@ struct GridwiseAttentionAccelRewritePattern
     }
 
     bool isReverseGrid = succeeded(rock::getReverseGrid(op));
-    affine::AffineForOp mLoopOp =
-        rewriter.create<affine::AffineForOp>(loc, 0, gemm0MBlocks, 1);
+    if (isReverseGrid && currentSeqLenTensor) {
+      return op.emitError(
+          "reverse grid is not compatible with currentSeqLen\n");
+    }
+
+    LoopLikeOpInterface mLoopOp;
+    Value gemm0MBlocksLastIter;
+    Value currentSeqLen;
+    // This is needed for KV Cache support
+    if (currentSeqLenTensor) {
+      Value zero = rewriter.createOrFold<arith::ConstantIndexOp>(loc, 0);
+      auto gridCoordsGemm0LoadCurrSeqLen = layout::makeGxNGridLayout(
+          rewriter, loc, bid, zero, gemm0NBlocks, gridSize, arch);
+
+      // add dim 1 for thread_read_into (registers)
+      ArrayRef<int64_t> inpShape =
+          cast<ShapedType>(currentSeqLenTensor.getType()).getShape();
+      SmallVector<StringRef> startNames = {"gemmG"};
+      rock::BottomUpTMBuilder addDim(rewriter, startNames, inpShape);
+      addDim.addDim("dummy", 1, 1);
+      addDim.passThrough(ArrayRef<uint32_t>{0}, ArrayRef<uint32_t>{0});
+      auto addDimAttr = addDim.get();
+      Value currentSeqLenTensorAddDim = rewriter.create<rock::TransformOp>(
+          loc, currentSeqLenTensor, addDimAttr);
+      Type currentSeqLenElemType =
+          getElementTypeOrSelf(currentSeqLenTensorAddDim.getType());
+
+      // create registers
+      auto privateMemoryAddressSpace = rewriter.getAttr<gpu::AddressSpaceAttr>(
+          gpu::GPUDialect::getPrivateAddressSpace());
+      auto memrefType = MemRefType::get({1}, currentSeqLenElemType, AffineMap{},
+                                        privateMemoryAddressSpace);
+      auto currentSeqLenLoad = rewriter.create<GpuAllocOp>(loc, memrefType);
+
+      // load from memory to registers
+      rewriter.create<ThreadwiseReadIntoOp>(
+          loc, vectorOfBoolShapedLike(currentSeqLenLoad),
+          currentSeqLenTensorAddDim, currentSeqLenLoad,
+          /*dynamicValidities=*/ValueRange{},
+          /*extraViews=*/rewriter.getArrayAttr({}),
+          /*extraIndices=*/
+          ValueRange{gridCoordsGemm0LoadCurrSeqLen.g_block}, true, true);
+
+      // load from registers
+      Value currentSeqLenValue = rewriter.create<InBoundsLoadOp>(
+          loc, currentSeqLenElemType, currentSeqLenLoad, ValueRange{zero});
+
+      currentSeqLen = rewriter.createOrFold<arith::IndexCastOp>(
+          loc, rewriter.getIndexType(), currentSeqLenValue);
+
+      Value constGemm0MPerBlock =
+          rewriter.createOrFold<arith::ConstantIndexOp>(loc, gemm0MPerBlock);
+      Value constGemm0MPerBlockM1 =
+          rewriter.createOrFold<arith::ConstantIndexOp>(loc,
+                                                        gemm0MPerBlock - 1);
+      Value numerator = rewriter.create<arith::AddIOp>(loc, currentSeqLen,
+                                                       constGemm0MPerBlockM1);
+      Value gemm0MBlocksEarlyExit = rewriter.createOrFold<arith::DivUIOp>(
+          loc, numerator, constGemm0MPerBlock);
+      Value one = rewriter.createOrFold<arith::ConstantIndexOp>(loc, 1);
+      gemm0MBlocksLastIter =
+          rewriter.createOrFold<arith::SubIOp>(loc, gemm0MBlocksEarlyExit, one);
+
+      mLoopOp =
+          rewriter.create<scf::ForOp>(loc, zero, gemm0MBlocksEarlyExit, one);
+    } else {
+      mLoopOp = rewriter.create<affine::AffineForOp>(loc, 0, gemm0MBlocks, 1);
+    }
     {
       PatternRewriter::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(mLoopOp.getBody());
+      // workaround for mLoopOp.getBody()
+      assert(mLoopOp->getRegions().size() == 1);
+      rewriter.setInsertionPointToStart(&mLoopOp->getRegion(0).front());
       int64_t kIterationsGemm0 = gemm0K / gemm0KPerBlock;
       Value kIterationsGemm0Val =
           rewriter.createOrFold<arith::ConstantIndexOp>(loc, kIterationsGemm0);
       Value mIterationsGemm0Val =
           rewriter.createOrFold<arith::ConstantIndexOp>(loc, gemm0MBlocks);
-      Value mLoopIV = mLoopOp.getInductionVar();
+      Value mLoopIV = mLoopOp.getSingleInductionVar().value();
       if (isReverseGrid) {
         AffineMap reverseMap = rock::getIdxReversalMap(rewriter);
         mLoopIV = rewriter.createOrFold<affine::AffineApplyOp>(
@@ -2089,8 +2212,9 @@ struct GridwiseAttentionAccelRewritePattern
       // Scale gemm0 output by (1/ln2)
       // So that we can use exp2 instead of exp.
 #ifndef ROCK_DEBUG_ATTENTION_REMOVE_SOFTMAX
-      Value ln2Recip = createConstantFloatOp(rewriter, loc, elemTypeQxK,
-                                             elemTypeQxK, 1.44269504);
+      Value ln2Recip = createConstantFloatOp(
+          rewriter, loc, elemTypeQxK, elemTypeQxK, 1.44269504f,
+          elemTypeQxK.isF32() ? APFloat::opOK : APFloat::opInexact);
       postProcessFirstGemmSplat<ElementwiseMultOp>(
           rewriter, loc, gridCoordsGemm0, gemm0OutBuffer, gemm0OutSubTileViews,
           ln2Recip.getDefiningOp<arith::ConstantOp>().getValue());
@@ -2104,6 +2228,10 @@ struct GridwiseAttentionAccelRewritePattern
                                      gemm0OutBuffer,
                                      gemm0OutSubTileViewsTrUnPadded, isGfx11);
       }
+      // Negative Infinite for extra values (KV cache)
+      setGemm0OutputOutOfScopeKVCache(
+          rewriter, loc, gridCoordsGemm0, gemm0OutBuffer,
+          gemm0OutSubTileViewsTr, currentSeqLen, mLoopIV, gemm0MBlocksLastIter);
 #endif
 
       APInt reductionAxis = APInt(64, 1);
